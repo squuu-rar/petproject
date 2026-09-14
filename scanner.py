@@ -1,81 +1,77 @@
 import pathlib
 import mutagen
-from db import get_db, DB_PATH
+from db import get_db
 
-# Simple mapping for easy tags
 EASY_KEYS = {
     "title": "title",
     "artist": "artist",
     "album": "album",
     "genre": "genre",
-    "tracknumber": "track_number",
-    "duration": "duration",
 }
+SUPPORTED_EXT = {".mp3", ".flac"}
 
 def _extract_track_data(file_path: pathlib.Path):
-    """Return dict of track metadata extracted from file_path using mutagen.
-    Fields:
-        path, title, artist, album, genre, track_number, duration
-    """
-    tags = {}
-    data = {}
     try:
         f = mutagen.File(file_path, easy=True)
     except Exception:
         f = None
+
     if f is None or f.tags is None:
         return None
+
+    data = {}
     tags = f.tags
     for key, db_key in EASY_KEYS.items():
         if key in tags:
-            value = tags[key]
-            if isinstance(value, list):
-                value = value[0]
-            data[db_key] = value
-    # duration from file info length
+            val = tags[key]
+            data[db_key] = val[0] if isinstance(val, list) else val
+
+    raw_track = tags.get("tracknumber")
+    if raw_track:
+        val = raw_track[0] if isinstance(raw_track, list) else raw_track
+        try:
+            data["track_number"] = int(str(val).split("/")[0])
+        except ValueError:
+            data["track_number"] = None
+
     if hasattr(f, "info") and hasattr(f.info, "length"):
         data["duration"] = f.info.length
+
     return data
 
-
 def _upsert_track(conn, track, path_str):
-    # Use path as unique
     cur = conn.cursor()
     cur.execute(
-        "INSERT OR IGNORE INTO tracks (path) VALUES (?)", (path_str,)
-    )
-    cur.execute("SELECT id FROM tracks WHERE path = ?", (path_str,))
-    row = cur.fetchone()
-    if row is None:
-        # shouldn't happen
-        return
-    track_id = row[0]
-    # update with rest of fields
-    cur.execute(
-        "UPDATE tracks SET title=?, artist=?, album=?, genre=?, track_number=?, duration=? WHERE id=?",
+        """
+        INSERT INTO tracks (path, title, artist, album, genre, track_number, duration)
+        VALUES (?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(path) DO UPDATE SET
+            title=excluded.title,
+            artist=excluded.artist,
+            album=excluded.album,
+            genre=excluded.genre,
+            track_number=excluded.track_number,
+            duration=excluded.duration
+        """,
         (
+            path_str,
             track.get("title"),
             track.get("artist"),
             track.get("album"),
             track.get("genre"),
             track.get("track_number"),
             track.get("duration"),
-            track_id,
         ),
     )
-    conn.commit()
-
 
 def scan(path: pathlib.Path):
-    """Scan a directory for mp3 and flac files and store metadata in DB."""
     conn = get_db()
-    for p in path.rglob("*.mp3"):
-        data = _extract_track_data(p)
-        if data:
-            _upsert_track(conn, data, str(p))
-    for p in path.rglob("*.flac"):
-        data = _extract_track_data(p)
-        if data:
-            _upsert_track(conn, data, str(p))
-    conn.close()
-    return
+    try:
+        for p in path.rglob("*"):
+            if p.suffix.lower() in SUPPORTED_EXT:
+                data = _extract_track_data(p)
+                if data:
+                    _upsert_track(conn, data, str(p))
+        conn.commit()
+    finally:
+        conn.close()

@@ -1,15 +1,9 @@
-import os
 import pathlib
-import tempfile
 import pytest
-from unittest import mock
-
-# We will monkeypatch mutagen.File and DB_PATH
 
 @pytest.fixture
 def temp_db(tmp_path):
     db_path = tmp_path / "tracks.db"
-    # patch db.DB_PATH
     import db
     original_path = db.DB_PATH
     db.DB_PATH = db_path
@@ -33,36 +27,26 @@ def dummy_mutagen_file(tags, length=300.0):
             self.info = DummyInfo(length)
     return DummyFile(tags, length)
 
-
-# Test that scanner writes a track into the DB
-
-def test_scan_inserts_track(temp_db, temp_dir):
-    # Create a fake mp3 file
+def test_scan_inserts_track(temp_db, temp_dir, monkeypatch):
     file_path = temp_dir / "song.mp3"
-    file_path.write_bytes(b"")  # empty content
-
-    # Prepare dummy tags
+    file_path.write_bytes(b"")
     tags = {
         "title": ["Test Title"],
         "artist": ["Test Artist"],
         "album": ["Test Album"],
         "genre": ["Test Genre"],
-        "tracknumber": ["1"],
+        "tracknumber": ["1/12"],
     }
-
     import scanner
-
-    # Monkeypatch scanner.mutagen.File
-    scanner.mutagen.File = lambda name, easy=True: dummy_mutagen_file(tags, 180.0)
-
+    monkeypatch.setattr(scanner.mutagen, "File", lambda name, easy=True: dummy_mutagen_file(tags, 180.0))
     scanner.scan(temp_dir)
 
-    # Verify in DB
     import db
     conn = db.get_db()
     cur = conn.execute("SELECT title, artist, album, genre, track_number, duration FROM tracks WHERE path=?", (str(file_path),))
     row = cur.fetchone()
     conn.close()
+
     assert row is not None
     title, artist, album, genre, track_number, duration = row
     assert title == "Test Title"
@@ -72,18 +56,16 @@ def test_scan_inserts_track(temp_db, temp_dir):
     assert track_number == 1
     assert abs(duration - 180.0) < 1e-5
 
-# Test that scanning non-tag file skips it
-
-def test_scan_skips_non_tag(temp_dir):
+def test_scan_skips_non_tag(temp_db, temp_dir, monkeypatch):
     file_path = temp_dir / "notatag.txt"
     file_path.write_text("hello")
     import scanner
-    scanner.mutagen.File = lambda name, easy=True: None
+    monkeypatch.setattr(scanner.mutagen, "File", lambda name, easy=True: None)
     scanner.scan(temp_dir)
+
     import db
     conn = db.get_db()
     cur = conn.execute("SELECT * FROM tracks WHERE path=?", (str(file_path),))
     row = cur.fetchone()
     conn.close()
     assert row is None
-
