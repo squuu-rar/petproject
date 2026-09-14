@@ -86,8 +86,10 @@ def call_cptr_agent(task_text):
             "model": CPTR_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
+            "reasoning_effort": "high",
+            "max_tokens": 18192,
         },
-        timeout=(15, 1200),  # До 20 минут на автономную работу агента
+        timeout=(15, 1800),  # До 20 минут на автономную работу агента
     )
     resp.raise_for_status()
     data = resp.json()
