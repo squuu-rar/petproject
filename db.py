@@ -1,9 +1,12 @@
 import sqlite3
 from pathlib import Path
 
-DB_PATH = Path("tracks.db")
+BASE_DIR = Path(__file__).resolve().parent
+DB_PATH = BASE_DIR / "tracks.db"
 
 SCHEMA = """
+PRAGMA journal_mode = WAL;
+
 CREATE TABLE IF NOT EXISTS tracks (
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     path TEXT UNIQUE,
@@ -20,7 +23,7 @@ CREATE TABLE IF NOT EXISTS history (
     track_id INTEGER,
     event_type TEXT, -- 'play', 'skip', 'like'
     timestamp DATETIME DEFAULT CURRENT_TIMESTAMP,
-    FOREIGN KEY(track_id) REFERENCES tracks(id)
+    FOREIGN KEY(track_id) REFERENCES tracks(id) ON DELETE CASCADE
 );
 
 CREATE TABLE IF NOT EXISTS playlists (
@@ -31,15 +34,14 @@ CREATE TABLE IF NOT EXISTS playlists (
 """
 
 def get_db():
-    conn = sqlite3.connect(DB_PATH)
+    conn = sqlite3.connect(DB_PATH, timeout=10.0)
     conn.row_factory = sqlite3.Row
+    conn.execute("PRAGMA foreign_keys = ON;")
     return conn
 
 def init_db():
-    conn = get_db()
-    conn.executescript(SCHEMA)
-    conn.commit()
-    conn.close()
+    with get_db() as conn:
+        conn.executescript(SCHEMA)
 
 if __name__ == "__main__":
     init_db()
