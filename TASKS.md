@@ -3,7 +3,7 @@
 Каждая строка — одна задача на один день/коммит.
 Формат: "- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
 
-- [ ] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
+- [x] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
 - [ ] scanner: handle edge cases (missing tags, OGG/Opus files)
 - [ ] api: GET /tracks with pagination and basic filters
 - [ ] api: GET /stream/{track_id} with HTTP Range support
