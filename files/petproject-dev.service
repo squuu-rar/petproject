@@ -1,0 +1,12 @@
+[Unit]
+Description=Daily pet project autodev via gpt-oss (cptr)
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=oneshot
+WorkingDirectory=/home/squ/petproject
+Environment=REPO_DIR=/home/squ/petproject
+Environment=CPTR_ENDPOINT=http://127.0.0.1:8000/v1/chat/completions
+Environment=CPTR_MODEL=cptr/squ
+ExecStart=/home/squ/petproject/venv/bin/python /home/squ/petproject/daily_dev.py

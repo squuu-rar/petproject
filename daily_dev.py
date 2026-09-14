@@ -40,6 +40,7 @@ TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:8000/v1/chat/completions")
 CPTR_MODEL = os.environ.get("CPTR_MODEL", "cptr/squ")
+CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 MAX_TOOL_ITERATIONS = 12
 MAX_FIX_ATTEMPTS = 2
 
@@ -159,8 +160,12 @@ def tool_run_shell(command):
 
 
 def call_model(messages):
+    headers = {"Content-Type": "application/json"}
+    if CPTR_API_KEY:
+        headers["Authorization"] = f"Bearer {CPTR_API_KEY}"
     resp = requests.post(
         CPTR_ENDPOINT,
+        headers=headers,
         json={"model": CPTR_MODEL, "messages": messages, "tools": TOOLS, "tool_choice": "auto"},
         timeout=300,
     )
