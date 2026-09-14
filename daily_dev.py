@@ -63,18 +63,15 @@ def run_tests():
     return res.returncode == 0, res.stdout + res.stderr
 
 def call_cptr_agent(task_text):
-    prompt = (
-        f"Ты — ведущий разработчик музыкального плеера. Рабочая директория проекта: {REPO_DIR}.\n"
-        f"Задача на сегодня: {task_text}\n\n"
-        "ПРАВИЛА ДЛЯ ИНСТРУМЕНТА COMPUTER:
-1. Используй write_file только с ПОЛНЫМИ АБСОЛЮТНЫМИ ПУТЯМИ (например: {REPO_DIR}/filename.py).
-2. Никогда не создавай файлы в /home/squ, только строго внутри {REPO_DIR}.\n"
-        f"1. Изучи файлы в директории {REPO_DIR}.\n"
-        f"2. Создай или обнови нужные файлы проекта в {REPO_DIR} полностью готовым кодом.\n"
-        f"3. Создай или обнови тесты в {REPO_DIR}/tests/ под сделанные изменения.\n"
-        "4. Запусти тесты через терминал и убедись, что они проходят без ошибок.\n"
-        "5. Выведи краткий итог того, что было сделано."
-    )
+    prompt = f"""Ты — ведущий разработчик музыкального плеера. Рабочая директория проекта: {REPO_DIR}.
+Задача на сегодня: {task_text}
+
+ПРАВИЛА ДЛЯ ИНСТРУМЕНТА COMPUTER:
+1. Используй write_file только с ПОЛНЫМИ АБСОЛЮТНЫМИ ПУТЯМИ (например: {REPO_DIR}/scanner.py, {REPO_DIR}/tests/test_scanner.py).
+2. Никогда не создавай файлы в /home/squ, только строго внутри {REPO_DIR}.
+3. Создай или обнови нужные файлы проекта и тесты в {REPO_DIR}/tests/.
+4. Запусти тесты через терминал (python -m pytest tests -q) и убедись, что они проходят.
+5. Выведи краткий итог сделанного."""
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
@@ -89,9 +86,9 @@ def call_cptr_agent(task_text):
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.2,
             "reasoning_effort": "high",
-            "max_tokens": 18192,
+            "max_tokens": 8192,
         },
-        timeout=(15, 1800),  # До 20 минут на автономную работу агента
+        timeout=(15, 1800),
     )
     resp.raise_for_status()
     data = resp.json()
@@ -110,7 +107,6 @@ def main():
     result_text = call_cptr_agent(task_text)
     log(f"Отчет агента:\n{result_text}")
 
-    # Проверяем тесты в окружении
     ok, test_out = run_tests()
     if not ok:
         log(f"Тесты завершились с ошибкой:\n{test_out}")
