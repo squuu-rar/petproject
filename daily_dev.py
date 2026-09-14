@@ -1,25 +1,4 @@
 #!/usr/bin/env python3
-"""
-daily_dev.py — автоматический ежедневный апдейт пет-проекта силами gpt-oss (cptr).
-
-Логика одного запуска:
-1. git pull --rebase --autostash
-2. берёт первую невыполненную задачу из TASKS.md ("- [ ] ...")
-3. собирает контекст репозитория (список файлов + содержимое ключевых файлов)
-4. отправляет задачу в cptr (OpenAI-compatible endpoint) с tool-calling
-   (write_file — создать/перезаписать файл, run_shell — выполнить команду)
-5. agentic-цикл: модель зовёт тулы -> скрипт их исполняет -> результат
-   возвращается модели -> и так до финального текстового ответа или лимита итераций
-6. прогоняет pytest (если есть тесты), при падении просит модель поправить (до 2 попыток)
-7. отмечает задачу выполненной в TASKS.md
-8. коммитит и пушит
-
-Настройка — через переменные окружения (см. .service файл):
-  REPO_DIR        — путь к репозиторию (по умолчанию /home/squ/petproject)
-  CPTR_ENDPOINT   — OpenAI-compatible chat/completions endpoint cptr
-  CPTR_MODEL      — имя модели в cptr
-"""
-
 import json
 import os
 import re
@@ -27,10 +6,8 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-
 import requests
 
-# ---------- КОНФИГ ----------
 REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject"))
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
@@ -40,10 +17,7 @@ CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 MAX_TOOL_ITERATIONS = 12
 MAX_FIX_ATTEMPTS = 2
 
-CONTEXT_ALWAYS = ["README.md", "TASKS.md", "requirements.txt", "main.py"]
-MAX_TREE_FILES = 200
-MAX_FILE_CHARS = 6000
-
+IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "TODO_FAILING.md"}
 
 def log(msg: str):
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
@@ -51,20 +25,17 @@ def log(msg: str):
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
-
 def run(cmd, cwd=REPO_DIR, check=True):
     log(f"$ {' '.join(cmd)}")
-    result = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
-    if result.stdout:
-        log(result.stdout.strip())
-    if result.stderr:
-        log(result.stderr.strip())
-    if check and result.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{result.stderr}")
-    return result
+    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+    if res.stdout:
+        log(res.stdout.strip())
+    if res.stderr:
+        log(res.stderr.strip())
+    if check and res.returncode != 0:
+        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
+    return res
 
-
-# ---------- ЗАДАЧИ ----------
 def get_next_task():
     if not TASKS_FILE.exists():
         return None, None
@@ -75,31 +46,11 @@ def get_next_task():
             return i, task_text
     return None, None
 
-
 def mark_task_done(index):
     lines = TASKS_FILE.read_text(encoding="utf-8").splitlines()
     lines[index] = re.sub(r"\[\s*\]", "[x]", lines[index], count=1)
     TASKS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-
-# ---------- КОНТЕКСТ РЕПО ----------
-def get_repo_tree():
-    result = run(["git", "ls-files"], check=False)
-    files = result.stdout.strip().splitlines()
-    return files[:MAX_TREE_FILES]
-
-
-def get_file_snippets():
-    snippets = []
-    for name in CONTEXT_ALWAYS:
-        p = REPO_DIR / name
-        if p.exists():
-            text = p.read_text(encoding="utf-8", errors="ignore")[:MAX_FILE_CHARS]
-            snippets.append(f"### {name}\n```\n{text}\n```")
-    return "\n\n".join(snippets)
-
-
-# ---------- TOOL-CALLING ----------
 TOOLS = [
     {
         "type": "function",
@@ -109,7 +60,7 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "path": {"type": "string", "description": "Путь относительно корня репо"},
+                    "path": {"type": "string", "description": "Относительный путь к файлу"},
                     "content": {"type": "string", "description": "Полное содержимое файла"},
                 },
                 "required": ["path", "content"],
@@ -119,12 +70,39 @@ TOOLS = [
     {
         "type": "function",
         "function": {
-            "name": "run_shell",
-            "description": "Выполнить shell-команду в корне репозитория (pytest, pip install и т.п.)",
+            "name": "read_file",
+            "description": "Прочитать содержимое файла из репозитория",
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Команда для выполнения"},
+                    "path": {"type": "string", "description": "Относительный путь к файлу"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_directory",
+            "description": "Посмотреть список файлов в папке репозитория",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Путь к папке (по умолчанию .)"},
+                },
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "run_shell",
+            "description": "Выполнить shell-команду (pytest, python и т.д.)",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "command": {"type": "string", "description": "Shell команда"},
                 },
                 "required": ["command"],
             },
@@ -132,28 +110,36 @@ TOOLS = [
     },
 ]
 
+def execute_tool(fn_name, args):
+    if fn_name == "write_file":
+        target = (REPO_DIR / args["path"]).resolve()
+        if not str(target).startswith(str(REPO_DIR.resolve())):
+            return {"error": "Path escapes repo directory"}
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(args["content"], encoding="utf-8")
+        log(f"write_file: {args['path']} ({len(args['content'])} chars)")
+        return {"status": "ok", "path": args["path"]}
 
-def tool_write_file(path, content):
-    target = (REPO_DIR / path).resolve()
-    if not str(target).startswith(str(REPO_DIR.resolve())):
-        return {"error": "path escapes repo dir, refused"}
-    target.parent.mkdir(parents=True, exist_ok=True)
-    target.write_text(content, encoding="utf-8")
-    log(f"write_file: {path} ({len(content)} chars)")
-    return {"status": "ok", "path": path}
+    elif fn_name == "read_file":
+        target = (REPO_DIR / args["path"]).resolve()
+        if not target.exists():
+            return {"error": "File not found"}
+        return {"content": target.read_text(encoding="utf-8", errors="ignore")[:5000]}
 
+    elif fn_name == "list_directory":
+        sub = args.get("path", ".")
+        target = (REPO_DIR / sub).resolve()
+        if not target.exists():
+            return {"error": "Directory not found"}
+        files = [p.name for p in target.iterdir() if not p.name.startswith(".")]
+        return {"files": files}
 
-def tool_run_shell(command):
-    log(f"run_shell: {command}")
-    result = subprocess.run(
-        command, cwd=REPO_DIR, shell=True, capture_output=True, text=True, timeout=180
-    )
-    return {
-        "returncode": result.returncode,
-        "stdout": result.stdout[-4000:],
-        "stderr": result.stderr[-4000:],
-    }
+    elif fn_name == "run_shell":
+        log(f"run_shell: {args['command']}")
+        res = subprocess.run(args["command"], cwd=REPO_DIR, shell=True, capture_output=True, text=True, timeout=120)
+        return {"returncode": res.returncode, "stdout": res.stdout[-2000:], "stderr": res.stderr[-2000:]}
 
+    return {"error": f"Unknown tool: {fn_name}"}
 
 def call_model(messages):
     headers = {"Content-Type": "application/json"}
@@ -163,121 +149,103 @@ def call_model(messages):
         CPTR_ENDPOINT,
         headers=headers,
         json={"model": CPTR_MODEL, "messages": messages, "tools": TOOLS, "tool_choice": "auto"},
-        timeout=(15, 900),  # 15 сек на подключение, до 15 минут на ответ
+        timeout=(15, 600),
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]
 
-
 def agentic_loop(task_text, repo_context):
     system_prompt = (
-        "Ты — автономный разработчик пет-проекта (self-hosted музыкальный плеер со своей "
-        "'волной'-рекомендацией, только на своей библиотеке файлов). "
-        "Тебе даётся ОДНА конкретная задача. Реализуй её маленьким, аккуратным изменением. "
-        "Используй write_file для создания/правки файлов и run_shell для запуска тестов/установки "
-        "зависимостей. Не переписывай архитектуру целиком, не трогай файлы, не относящиеся к задаче. "
-        "Когда закончишь — ответь текстом (без вызова тулов) с кратким summary изменений."
+        "Ты — автономный senior-разработчик пет-проекта (музыкальный плеер со стримингом и 'волной'). "
+        "Тебе дается ОДНА конкретная задача на сегодня. Реализуй ее полностью рабочим кодом. "
+        "ОБЯЗАТЕЛЬНО используй write_file, чтобы создать или обновить код/модули/тесты в проекте. "
+        "Не завершай ответ только текстом без вызова инструментов, если код еще не написан!"
     )
-    user_prompt = f"Задача: {task_text}\n\nКонтекст репозитория (ключевые файлы):\n{repo_context}"
-
+    user_prompt = f"Задача: {task_text}\n\nФайлы в репо:\n{repo_context}"
     messages = [
         {"role": "system", "content": system_prompt},
         {"role": "user", "content": user_prompt},
     ]
 
     for _ in range(MAX_TOOL_ITERATIONS):
-        message = call_model(messages)
-        messages.append(message)
-
-        tool_calls = message.get("tool_calls")
+        msg = call_model(messages)
+        messages.append(msg)
+        tool_calls = msg.get("tool_calls")
         if not tool_calls:
-            return message.get("content", "")
+            return msg.get("content", "")
 
         for call in tool_calls:
             fn_name = call["function"]["name"]
-            args = json.loads(call["function"]["arguments"])
-            if fn_name == "write_file":
-                result = tool_write_file(**args)
-            elif fn_name == "run_shell":
-                result = tool_run_shell(**args)
-            else:
-                result = {"error": f"unknown tool {fn_name}"}
+            try:
+                args = json.loads(call["function"]["arguments"])
+                result = execute_tool(fn_name, args)
+            except Exception as ex:
+                result = {"error": str(ex)}
 
-            messages.append(
-                {
-                    "role": "tool",
-                    "tool_call_id": call["id"],
-                    "content": json.dumps(result, ensure_ascii=False),
-                }
-            )
+            messages.append({
+                "role": "tool",
+                "tool_call_id": call["id"],
+                "content": json.dumps(result, ensure_ascii=False),
+            })
+    return "Достигнут лимит итераций."
 
-    return "Достигнут лимит итераций, задача не завершена полностью."
-
-
-# ---------- ТЕСТЫ ----------
 def run_tests():
-    if not (REPO_DIR / "tests").exists() and not list(REPO_DIR.glob("test_*.py")):
-        return True, "тестов нет — пропуск"
-    result = subprocess.run(["python", "-m", "pytest", "-q"], cwd=REPO_DIR, capture_output=True, text=True)
-    return result.returncode == 0, result.stdout + result.stderr
+    if not (REPO_DIR / "tests").exists():
+        return True, "Тестов нет"
+    res = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO_DIR, capture_output=True, text=True)
+    return res.returncode == 0, res.stdout + res.stderr
 
+def has_staged_code_changes():
+    status = run(["git", "status", "--porcelain"], check=False).stdout.strip().splitlines()
+    for line in status:
+        file_path = line[3:].strip()
+        if Path(file_path).name not in IGNORED_SYSTEM_FILES:
+            return True
+    return False
 
-# ---------- GIT ----------
-def git_commit_and_push(task_text):
-    run(["git", "add", "-A"])
-    status = run(["git", "status", "--porcelain"], check=False)
-    if not status.stdout.strip():
-        log("Нет изменений — коммит не нужен")
-        return False
-    msg = f"auto: {task_text[:72]}"
-    run(["git", "commit", "-m", msg])
-    run(["git", "push"])
-    return True
-
-
-# ---------- MAIN ----------
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
     run(["git", "pull", "--rebase", "--autostash"], check=False)
 
     idx, task_text = get_next_task()
     if task_text is None:
-        log("Задач в TASKS.md не осталось — нечего делать сегодня")
+        log("Все задачи в TASKS.md выполнены.")
         return
 
-    log(f"Задача дня: {task_text}")
+    log(f"Начало работы над задачей: {task_text}")
+    files_tree = run(["git", "ls-files"], check=False).stdout.strip()
 
-    get_repo_tree()
-    context = get_file_snippets()
+    summary = agentic_loop(task_text, files_tree)
+    log(f"Ответ модели: {summary}")
 
-    summary = agentic_loop(task_text, context)
-    log(f"Модель закончила: {summary}")
-
-    ok, output = run_tests()
+    ok, test_out = run_tests()
     attempt = 0
     while not ok and attempt < MAX_FIX_ATTEMPTS:
         attempt += 1
-        log(f"Тесты упали, попытка исправления {attempt}/{MAX_FIX_ATTEMPTS}")
-        fix_prompt = f"Тесты упали после твоих изменений. Вывод:\n{output[-3000:]}\nИсправь."
-        summary = agentic_loop(fix_prompt, get_file_snippets())
-        ok, output = run_tests()
+        log(f"Тесты упали, попытка автоисправления {attempt}/{MAX_FIX_ATTEMPTS}")
+        agentic_loop(f"Тесты упали:\n{test_out[-2000:]}\nИсправь код или тесты.", files_tree)
+        ok, test_out = run_tests()
 
     if not ok:
-        with open(REPO_DIR / "TODO_FAILING.md", "a", encoding="utf-8") as f:
-            f.write(
-                f"\n## {datetime.now().date()} — {task_text}\n"
-                f"Тесты не прошли после {MAX_FIX_ATTEMPTS} попыток:\n```\n{output[-2000:]}\n```\n"
-            )
-        log("Тесты так и не прошли — зафиксировано в TODO_FAILING.md")
+        log("Тесты так и не прошли. Изменения сбрасываются.")
+        run(["git", "reset", "--hard", "HEAD"])
+        return
+
+    run(["git", "add", "-A"])
+    if not has_staged_code_changes():
+        log("Модель не создала или не изменила ни одного файла с кодом. Задача не закрыта.")
+        run(["git", "reset", "--hard", "HEAD"])
+        return
 
     mark_task_done(idx)
-    git_commit_and_push(task_text)
-    log("Готово.")
-
+    run(["git", "add", "TASKS.md"])
+    run(["git", "commit", "-m", f"auto: {task_text[:70]}"])
+    run(["git", "push"])
+    log("Успешно закоммичено и отправлено в репозиторий.")
 
 if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log(f"ОШИБКА: {e}")
+        log(f"Критическая ошибка: {e}")
         sys.exit(1)
