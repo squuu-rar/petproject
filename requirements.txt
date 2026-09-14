@@ -4,3 +4,5 @@ mutagen
 pytest
 requests
 httpx
+ytmusicapi
+yt-dlp
