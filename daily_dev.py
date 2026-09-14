@@ -3,7 +3,7 @@
 daily_dev.py — автоматический ежедневный апдейт пет-проекта силами gpt-oss (cptr).
 
 Логика одного запуска:
-1. git pull
+1. git pull --rebase --autostash
 2. берёт первую невыполненную задачу из TASKS.md ("- [ ] ...")
 3. собирает контекст репозитория (список файлов + содержимое ключевых файлов)
 4. отправляет задачу в cptr (OpenAI-compatible endpoint) с tool-calling
@@ -18,10 +18,6 @@ daily_dev.py — автоматический ежедневный апдейт 
   REPO_DIR        — путь к репозиторию (по умолчанию /home/squ/petproject)
   CPTR_ENDPOINT   — OpenAI-compatible chat/completions endpoint cptr
   CPTR_MODEL      — имя модели в cptr
-
-Важно: если у вашего уже работающего bridge для write_file другая схема
-параметров (не path/content) — поправьте TOOLS и tool_write_file под неё,
-чтобы не тестировать новый tool-calling с нуля.
 """
 
 import json
@@ -167,7 +163,7 @@ def call_model(messages):
         CPTR_ENDPOINT,
         headers=headers,
         json={"model": CPTR_MODEL, "messages": messages, "tools": TOOLS, "tool_choice": "auto"},
-        timeout=300,
+        timeout=(15, 900),  # 15 сек на подключение, до 15 минут на ответ
     )
     resp.raise_for_status()
     return resp.json()["choices"][0]["message"]
@@ -242,7 +238,7 @@ def git_commit_and_push(task_text):
 # ---------- MAIN ----------
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
-    run(["git", "pull", "--rebase"], check=False)
+    run(["git", "pull", "--rebase", "--autostash"], check=False)
 
     idx, task_text = get_next_task()
     if task_text is None:
