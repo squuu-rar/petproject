@@ -1,6 +1,8 @@
 import pathlib
 import mutagen
 from db import get_db
+import hashlib
+import os
 
 EASY_KEYS = {
     "title": "title",
@@ -9,6 +11,10 @@ EASY_KEYS = {
     "genre": "genre",
 }
 SUPPORTED_EXT = {".mp3", ".flac", ".ogg", ".opus", ".m4a"}
+
+BASE_DIR = pathlib.Path(__file__).resolve().parent
+COVERS_DIR = BASE_DIR / "static" / "covers"
+
 
 def _extract_track_data(file_path: pathlib.Path):
     try:
@@ -40,9 +46,10 @@ def _extract_track_data(file_path: pathlib.Path):
     if "title" not in data:
         data["title"] = file_path.stem
 
-    return data
+    return data, f
 
-def _upsert_track(conn, track, path_str):
+
+def _upsert_track(conn, track: dict, path_str: str):
     cur = conn.cursor()
     cur.execute(
         """
@@ -67,14 +74,50 @@ def _upsert_track(conn, track, path_str):
         ),
     )
 
+
+def _extract_cover_art(file_path: pathlib.Path, f):
+    picture_data = None
+    # MP3 APIC frame extraction
+    if hasattr(f, "tags"):
+        tags = f.tags
+        if isinstance(tags, dict):
+            if "APIC" in tags:
+                apic = tags.get("APIC")
+                picture_data = getattr(apic, "data", None)
+        else:
+            try:
+                apic_frame = f.tags.get("APIC")
+                picture_data = getattr(apic_frame, "data", None)
+            except Exception:
+                pass
+
+    # FLAC picture extraction
+    if picture_data is None and hasattr(f, "pictures"):
+        pics = getattr(f, "pictures", None)
+        if pics and len(pics) > 0:
+            pic = pics[0]
+            picture_data = getattr(pic, "data", None)
+
+    if picture_data:
+        COVERS_DIR.mkdir(parents=True, exist_ok=True)
+        hash_val = hashlib.sha256(str(file_path).encode("utf-8")).hexdigest()[:12]
+        cover_path = COVERS_DIR / f"{hash_val}.jpg"
+        with open(cover_path, "wb") as fp:
+            fp.write(picture_data)
+        return cover_path.as_posix()
+    return None
+
+
 def scan(path: pathlib.Path):
     conn = get_db()
     try:
         for p in path.rglob("*"):
             if p.suffix.lower() in SUPPORTED_EXT:
-                data = _extract_track_data(p)
-                if data:
+                data_f = _extract_track_data(p)
+                if data_f:
+                    data, f_obj = data_f
                     _upsert_track(conn, data, str(p))
+                    _extract_cover_art(p, f_obj)
         conn.commit()
     finally:
         conn.close()

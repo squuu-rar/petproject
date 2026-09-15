@@ -5,7 +5,7 @@
 
 - [x] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
 - [x] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
-- [ ] scanner: extract embedded cover art (APIC/FLAC picture) and cache to static/covers
+- [x] scanner: extract embedded cover art (APIC/FLAC picture) and cache to static/covers
 
 - [ ] db: add source field ('local'|'remote'), external_id and cache_path to tracks schema
 - [ ] providers: create base StreamSource abstract class with get_stream_url and get_metadata
