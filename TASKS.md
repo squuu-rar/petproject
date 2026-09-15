@@ -4,7 +4,7 @@
 Формат: "- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
 
 - [x] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
-- [ ] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
+- [x] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
 - [ ] scanner: extract embedded cover art (APIC/FLAC picture) and cache to static/covers
 
 - [ ] db: add source field ('local'|'remote'), external_id and cache_path to tracks schema

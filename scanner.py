@@ -8,7 +8,7 @@ EASY_KEYS = {
     "album": "album",
     "genre": "genre",
 }
-SUPPORTED_EXT = {".mp3", ".flac"}
+SUPPORTED_EXT = {".mp3", ".flac", ".ogg", ".opus", ".m4a"}
 
 def _extract_track_data(file_path: pathlib.Path):
     try:
@@ -16,13 +16,13 @@ def _extract_track_data(file_path: pathlib.Path):
     except Exception:
         f = None
 
-    if f is None or f.tags is None:
+    if f is None or not hasattr(f, "info"):
         return None
 
+    tags = f.tags or {}
     data = {}
-    tags = f.tags
     for key, db_key in EASY_KEYS.items():
-        if key in tags:
+        if key in tags and tags[key]:
             val = tags[key]
             data[db_key] = val[0] if isinstance(val, list) else val
 
@@ -36,6 +36,9 @@ def _extract_track_data(file_path: pathlib.Path):
 
     if hasattr(f, "info") and hasattr(f.info, "length"):
         data["duration"] = f.info.length
+
+    if "title" not in data:
+        data["title"] = file_path.stem
 
     return data
 
