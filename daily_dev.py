@@ -7,7 +7,7 @@ from datetime import datetime
 from pathlib import Path
 import requests
 
-REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject"))
+REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:8000/v1/chat/completions")
@@ -15,6 +15,7 @@ CPTR_MODEL = os.environ.get("CPTR_MODEL", "cptr/squ")
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 
 IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
+IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
 def log(msg: str):
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
@@ -34,8 +35,8 @@ def run(cmd, cwd=REPO_DIR, check=True):
     return res
 
 def rollback():
-    run(["git", "reset", "--hard", "HEAD"])
-    run(["git", "clean", "-fd"])
+    run(["git", "reset", "--hard", "HEAD"], check=False)
+    run(["git", "clean", "-fd"], check=False)
 
 def get_next_task():
     if not TASKS_FILE.exists():
@@ -56,37 +57,46 @@ def get_repo_context():
     context = []
     for p in sorted(REPO_DIR.rglob("*.py")):
         rel = p.relative_to(REPO_DIR)
-        if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part == "venv" for part in rel.parts):
+        if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
         context.append(f"--- Файл: {rel} ---\n{p.read_text(encoding='utf-8')}")
     return "\n\n".join(context)
 
 def write_target_file(rel_path: str, code: str):
-    rel_path = rel_path.strip("`* \t")
-    target_file = (REPO_DIR / rel_path).resolve()
-    if not str(target_file).startswith(str(REPO_DIR.resolve())):
+    clean_path = rel_path.strip("`* \t\r\n").lstrip("/\\")
+    target_file = (REPO_DIR / clean_path).resolve()
+    try:
+        target_file.relative_to(REPO_DIR)
+    except ValueError:
         log(f"Защита пути: попытка записи вне репозитория ({rel_path})")
         return False
+
     target_file.parent.mkdir(parents=True, exist_ok=True)
     target_file.write_text(code.strip() + "\n", encoding="utf-8")
-    log(f"Обновлен файл: {rel_path}")
+    log(f"Обновлен файл: {clean_path}")
     return True
 
 def apply_files_from_response(content: str):
+    if not content or not isinstance(content, str):
+        return False
+
     updated = False
-    for m in re.finditer(r"=== FILE:\s*([^\n]+)\s*===\n(.*?)(?:=== END FILE ===|\Z)", content, re.DOTALL):
+    # Формат 1: === FILE: path === с защитой от поглощения следующего файла
+    for m in re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
     if updated:
         return True
 
-    for m in re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\n(.*?)```", content, re.DOTALL):
+    # Формат 2: ```python:path/to/file.py
+    for m in re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
     if updated:
         return True
 
-    for m in re.finditer(r"(?:###\s*|\*\*)?(?:Файл:\s*|File:\s*)?`?([a-zA-Z0-9_\-\./]+\.py)`?\*?\*?\s*\n```(?:python)?\n(.*?)```", content, re.DOTALL):
+    # Формат 3: Заголовок файла перед блоком кода
+    for m in re.finditer(r"(?:###\s*|\*\*)?(?:Файл:\s*|File:\s*)?`?([a-zA-Z0-9_\-\./]+\.py)`?\*?\*?\s*\r?\n```(?:python)?\r?\n(.*?)```", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
 
@@ -95,9 +105,14 @@ def apply_files_from_response(content: str):
 def has_staged_code_changes():
     status = run(["git", "status", "--porcelain"], check=False).stdout.strip().splitlines()
     for line in status:
-        file_path = line[3:].strip()
-        if Path(file_path).name not in IGNORED_SYSTEM_FILES:
-            return True
+        if len(line) < 4:
+            continue
+        file_path = Path(line[3:].strip().strip('"'))
+        if file_path.name in IGNORED_SYSTEM_FILES:
+            continue
+        if any(part.startswith(".") or part in IGNORED_DIRS for part in file_path.parts):
+            continue
+        return True
     return False
 
 def run_tests():
@@ -145,7 +160,8 @@ def call_cptr_agent(task_text):
     )
     resp.raise_for_status()
     data = resp.json()
-    return data["choices"][0]["message"]["content"]
+    message = data.get("choices", [{}])[0].get("message", {})
+    return message.get("content") or ""
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
@@ -158,8 +174,12 @@ def main():
 
     log(f"Начало работы над задачей: {task_text}")
     result_text = call_cptr_agent(task_text)
-    log("Ответ модели получен. Применяем изменения к файлам...")
+    if not result_text:
+        log("Модель вернула пустой ответ. Откат.")
+        rollback()
+        return
 
+    log("Ответ модели получен. Применяем изменения к файлам...")
     applied = apply_files_from_response(result_text)
     if not applied:
         log("Модель не вернула файлы в ожидаемом формате. Откат.")
@@ -190,4 +210,5 @@ if __name__ == "__main__":
         main()
     except Exception as e:
         log(f"Критическая ошибка: {e}")
+        rollback()
         sys.exit(1)
