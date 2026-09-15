@@ -23,25 +23,27 @@ def _extract_track_data(file_path: pathlib.Path):
     except Exception:
         return None
 
-    if f is None or not getattr(f, "tags", None):
+    if f is None:
         return None
+
+    raw_tags = getattr(f, "tags", None)
+    tags = raw_tags if hasattr(raw_tags, "get") else {}
 
     data = {}
     for easy_k, db_k in EASY_KEYS.items():
-        val = f.tags.get(easy_k)
+        val = tags.get(easy_k)
         if val:
             data[db_k] = str(val[0])
+        else:
+            data[db_k] = None
 
-    if "track_number" in data:
-        raw_track = data["track_number"]
+    if data.get("track_number"):
         try:
-            data["track_number"] = int(str(raw_track).split("/")[0])
+            data["track_number"] = int(str(data["track_number"]).split("/")[0])
         except (ValueError, TypeError):
             data["track_number"] = None
-    else:
-        data["track_number"] = None
 
-    if "year" in data:
+    if data.get("year"):
         try:
             data["year"] = int(str(data["year"])[:4])
         except (ValueError, TypeError):
@@ -49,22 +51,24 @@ def _extract_track_data(file_path: pathlib.Path):
 
     data["duration"] = getattr(getattr(f, "info", None), "length", None)
 
-    if "title" not in data or not data["title"]:
+    if not data.get("title"):
         data["title"] = file_path.stem
 
     return data, f
 
 def _extract_cover_art(file_path: pathlib.Path, f=None) -> str | None:
+    if f is None:
+        return None
     picture_data = None
 
     # 1. FLAC / OGG / Opus
-    if f is not None and hasattr(f, "pictures"):
+    if hasattr(f, "pictures"):
         pics = getattr(f, "pictures", None)
         if pics and len(pics) > 0:
             picture_data = getattr(pics[0], "data", None)
 
     # 2. Обработка ID3 / словарей тегов
-    if not picture_data and f is not None and hasattr(f, "tags"):
+    if not picture_data and hasattr(f, "tags"):
         tags = f.tags
         if isinstance(tags, dict):
             for k, v in tags.items():
