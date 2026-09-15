@@ -1,68 +1,90 @@
+import pathlib
 import pytest
+import scanner
+import db
 
-# Dummy classes to simulate mutagen structures
-class DummyAPIC:
+class DummyPic:
     def __init__(self, data):
         self.data = data
 
-class DummyPicture:
+class DummyTag:
     def __init__(self, data):
         self.data = data
 
-class DummyInfo:
-    def __init__(self, length):
-        self.length = length
-
-class DummyFile:
-    def __init__(self, tags=None, pictures=None, info=None):
+class DummyAudio:
+    def __init__(self, tags=None, pictures=None, length=180.0):
         self.tags = tags or {}
-        self.pictures = pictures
-        self.info = info or DummyInfo(300.0)
+        self.pictures = pictures or []
+        self.info = type("Info", (), {"length": length})()
 
-@pytest.fixture
-def scanner_module(tmp_path):
-    import scanner
-    # Patch covers directory to a temp location
-    scanner.COVERS_DIR = tmp_path / "static" / "covers"
-    return scanner
+def test_extract_cover_flac(temp_db, temp_dir, monkeypatch):
+    flac_path = temp_dir / "track.flac"
+    flac_path.write_bytes(b"dummy")
 
-def test_extract_cover_art_mp3(scanner_module, tmp_path, monkeypatch):
-    file_path = tmp_path / "song.mp3"
-    file_path.write_bytes(b"")
-    cover_bytes = b"fakejpegdata"
-    tags = {"title": ["Test Title"], "APIC": DummyAPIC(cover_bytes)}
-    monkeypatch.setattr(scanner_module.mutagen, "File", lambda name, easy=True: DummyFile(tags=tags, info=DummyInfo(180.0)))
-    scanner_module.scan(tmp_path)
-    covers_dir = scanner_module.COVERS_DIR
-    assert covers_dir.exists()
-    jpg_files = list(covers_dir.glob("*.jpg"))
-    assert len(jpg_files) == 1
-    with open(jpg_files[0], "rb") as f:
-        data = f.read()
-    assert data == cover_bytes
+    dummy_img = b"\x89PNG\r\n\x1a\n\x00\x00_flac_cover"
+    tags = {"title": ["Test FLAC"], "artist": ["Artist"]}
+    dummy_audio = DummyAudio(tags=tags, pictures=[DummyPic(dummy_img)])
 
-def test_extract_cover_art_flac(scanner_module, tmp_path, monkeypatch):
-    file_path = tmp_path / "song.flac"
-    file_path.write_bytes(b"")
-    cover_bytes = b"alsofakejpeg"
-    pictures = [DummyPicture(cover_bytes)]
-    tags = {"title": ["Flac Title"]}
-    monkeypatch.setattr(scanner_module.mutagen, "File", lambda name, easy=True: DummyFile(tags=tags, pictures=pictures, info=DummyInfo(200.0)))
-    scanner_module.scan(tmp_path)
-    covers_dir = scanner_module.COVERS_DIR
-    assert covers_dir.exists()
-    jpg_files = list(covers_dir.glob("*.jpg"))
-    assert len(jpg_files) == 1
-    with open(jpg_files[0], "rb") as f:
-        data = f.read()
-    assert data == cover_bytes
+    monkeypatch.setattr(scanner.mutagen, "File", lambda name, easy=True: dummy_audio)
+    scanner.scan(temp_dir)
 
-def test_no_cover_art(scanner_module, tmp_path, monkeypatch):
-    file_path = tmp_path / "track.ogg"
-    file_path.write_bytes(b"")
-    tags = {"title": ["OGG Title"]}
-    monkeypatch.setattr(scanner_module.mutagen, "File", lambda name, easy=True: DummyFile(tags=tags, info=DummyInfo(150.0)))
-    scanner_module.scan(tmp_path)
-    covers_dir = scanner_module.COVERS_DIR
-    jpg_files = list(covers_dir.glob("*.jpg")) if covers_dir.exists() else []
-    assert len(jpg_files) == 0
+    conn = db.get_db()
+    cur = conn.execute("SELECT title, cover_path FROM tracks WHERE path=?", (str(flac_path),))
+    row = cur.fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["cover_path"] is not None
+    assert row["cover_path"].startswith("/static/covers/")
+
+    saved_file = scanner.BASE_DIR / row["cover_path"].lstrip("/")
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == dummy_img
+
+def test_extract_cover_apic_mp3(temp_db, temp_dir, monkeypatch):
+    mp3_path = temp_dir / "song.mp3"
+    mp3_path.write_bytes(b"dummy")
+
+    dummy_img = b"\xff\xd8\xff_mp3_cover"
+    tags = {
+        "title": ["Test MP3"],
+        "artist": ["Artist"],
+        "APIC:": DummyTag(dummy_img),
+    }
+    dummy_audio = DummyAudio(tags=tags)
+
+    monkeypatch.setattr(scanner.mutagen, "File", lambda name, easy=True: dummy_audio)
+    scanner.scan(temp_dir)
+
+    conn = db.get_db()
+    cur = conn.execute("SELECT cover_path FROM tracks WHERE path=?", (str(mp3_path),))
+    row = cur.fetchone()
+    conn.close()
+
+    assert row is not None
+    assert row["cover_path"] is not None
+
+    saved_file = scanner.BASE_DIR / row["cover_path"].lstrip("/")
+    assert saved_file.exists()
+    assert saved_file.read_bytes() == dummy_img
+
+def test_cover_art_deduplication(temp_db, temp_dir, monkeypatch):
+    song1 = temp_dir / "s1.mp3"
+    song2 = temp_dir / "s2.mp3"
+    song1.write_bytes(b"dummy1")
+    song2.write_bytes(b"dummy2")
+
+    same_img = b"identical_cover_binary_data"
+    tags = {"title": ["Song"], "APIC": DummyTag(same_img)}
+    dummy_audio = DummyAudio(tags=tags)
+
+    monkeypatch.setattr(scanner.mutagen, "File", lambda name, easy=True: dummy_audio)
+    scanner.scan(temp_dir)
+
+    conn = db.get_db()
+    cur = conn.execute("SELECT cover_path FROM tracks")
+    rows = cur.fetchall()
+    conn.close()
+
+    assert len(rows) == 2
+    assert rows[0]["cover_path"] == rows[1]["cover_path"]
