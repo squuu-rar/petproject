@@ -8,6 +8,7 @@ EASY_KEYS = {
     "title": "title",
     "artist": "artist",
     "album": "album",
+    "genre": "genre",
     "date": "year",
     "tracknumber": "track_number",
 }
@@ -124,12 +125,13 @@ def _upsert_track(conn, track: dict, path_str: str):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO tracks (path, title, artist, album, year, track_number, duration, cover_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tracks (path, title, artist, album, genre, year, track_number, duration, cover_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             title=excluded.title,
             artist=excluded.artist,
             album=excluded.album,
+            genre=excluded.genre,
             year=excluded.year,
             track_number=excluded.track_number,
             duration=excluded.duration,
@@ -140,6 +142,7 @@ def _upsert_track(conn, track: dict, path_str: str):
             track.get("title"),
             track.get("artist"),
             track.get("album"),
+            track.get("genre"),
             track.get("year"),
             track.get("track_number"),
             track.get("duration"),

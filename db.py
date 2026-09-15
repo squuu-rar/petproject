@@ -20,6 +20,7 @@ def init_db():
             title TEXT,
             artist TEXT,
             album TEXT,
+            genre TEXT,
             year INTEGER,
             track_number INTEGER,
             duration REAL,
@@ -29,6 +30,8 @@ def init_db():
     )
     cur.execute("PRAGMA table_info(tracks)")
     columns = [col[1] for col in cur.fetchall()]
+    if "genre" not in columns:
+        cur.execute("ALTER TABLE tracks ADD COLUMN genre TEXT")
     if "cover_path" not in columns:
         cur.execute("ALTER TABLE tracks ADD COLUMN cover_path TEXT")
     conn.commit()
