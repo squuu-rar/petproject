@@ -12,7 +12,7 @@ REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:8000/v1/chat/completions")
-CPTR_MODEL = os.environ.get("CPTR_MODEL", "cptr/squ")
+CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma4-26b-fast:latest")
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 
 MAX_ATTEMPTS = 3
@@ -182,7 +182,6 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             "model": CPTR_MODEL,
             "messages": [{"role": "user", "content": prompt}],
             "temperature": 0.0,
-            "reasoning_effort": "high",
             "max_tokens": 8192,
         },
         timeout=(15, 1800),
