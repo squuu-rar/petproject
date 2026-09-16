@@ -21,7 +21,7 @@ CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest").strip()
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
 MAX_ATTEMPTS = 3
-IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
+IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "daily_dev_2.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
 def log(msg: str):
@@ -139,28 +139,27 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
 
     system_prompt = (
-        "Ты — ведущий Python-инженер проекта. Твоя задача — реализовать функционал качественно и надежно.\n"
-        "Сначала ты можешь провести анализ: обдумать архитектуру, типы данных, граничные случаи и тесты.\n"
-        "После рассуждений ты ОБЯЗАТЕЛЬНО должен предоставить полный рабочий код в блоках следующего вида:\n\n"
+        "Ты — ведущий Python-инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
+        "РЕГЛАМЕНТ РАБОТЫ:\n"
+        "1. Рассуждения (CoT): составь структурированный план решения до 200–300 слов:\n"
+        "   - Сигнатуры классов и методов.\n"
+        "   - Стратегия моков внешних библиотек (pytest, monkeypatch).\n"
+        "   - Граничные случаи.\n"
+        "2. Вывод кода: закончив план, СРАЗУ переходи к коду в блоках:\n\n"
         "=== FILE: путь/к/файлу.py ===\n"
         "# полный рабочий код файла без сокращений\n"
         "=== END FILE ===\n\n"
-        "Требования к коду:\n"
-        "1. Явные импорты всех используемых модулей в начале каждого файла.\n"
-        "2. Для тестов использовать pytest, фикстуры tmp_path и существующие хелперы.\n"
-        "3. Не оставлять заглушек 'pass' или '...'. Только реальная реализация."
+        "Требования:\n"
+        "- Явные импорты в начале каждого файла.\n"
+        "- Никаких заглушек pass или ... Только готовая реализация.\n"
+        "- Полноценные pytest-тесты."
     )
 
     feedback_text = ""
     if error_feedback:
         feedback_text = f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nПроанализируй ошибку и исправь её!\n"
 
-    user_prompt = f"""Задача: {task_text}
-{feedback_text}
-ТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:
-{repo_files}
-
-Обдумай решение и выведи результирующие файлы в формате === FILE: ... ==="""
+    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 250 слов) и выведи файлы в формате === FILE: ... ==="
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
