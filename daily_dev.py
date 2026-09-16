@@ -173,7 +173,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.1,
-        "max_tokens": 10240,
+        "max_tokens": 8192,
     }
 
     log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
@@ -186,7 +186,10 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         log(f"Пустой ответ API: {data}")
         return ""
 
-    message = choices[0].get("message", {})
+    choice = choices[0]
+    message = choice.get("message", {})
+    finish_reason = choice.get("finish_reason", "unknown")
+
     reasoning = (
         message.get("reasoning")
         or message.get("reasoning_content")
@@ -195,15 +198,23 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     )
     content = message.get("content") or ""
 
-    log(f"Ollama ответ: content={len(content)} симв., reasoning={len(reasoning)} симв.")
+    if not content.strip() and isinstance(message.get("text"), str):
+        content = message["text"]
+
+    log(f"Ollama ответ (finish_reason={finish_reason}): content={len(content)} симв., reasoning={len(reasoning)} симв.")
+
     if reasoning.strip():
         log("--- Ход мыслей модели (Reasoning) ---")
         for r_line in reasoning.strip().splitlines()[:15]:
             log(f"CoT: {r_line}")
 
-    combined_output = f"{content}
+    parts = []
+    if content.strip():
+        parts.append(content.strip())
+    if reasoning.strip():
+        parts.append(reasoning.strip())
 
-{reasoning}".strip()
+    combined_output = "\n\n".join(parts).strip()
     return combined_output
 
 def main():
@@ -229,8 +240,8 @@ def main():
 
         applied = apply_files_from_response(result_text)
         if not applied:
-            log("Не удалось извлечь файлы из ответа (модель увлеклась рассуждениями без блоков файлов).")
-            last_error = "Файлы не найдены. Обязательно добавь результирующий код в блоках === FILE: путь === код === END FILE ==="
+            log("Не удалось извлечь файлы из ответа.")
+            last_error = "Файлы не найдены. Обязательно добавь код в блоках === FILE: путь === код === END FILE ==="
             continue
 
         ok, test_out = run_tests()
