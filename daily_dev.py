@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import ast
 import os
 import re
 import subprocess
@@ -14,6 +15,7 @@ CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:8000/v1/chat/c
 CPTR_MODEL = os.environ.get("CPTR_MODEL", "cptr/squ")
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 
+MAX_ATTEMPTS = 3
 IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
@@ -35,6 +37,7 @@ def run(cmd, cwd=REPO_DIR, check=True):
     return res
 
 def rollback():
+    log("Откат всех незакоммиченных изменений (git reset & clean)...")
     run(["git", "reset", "--hard", "HEAD"], check=False)
     run(["git", "clean", "-fd"], check=False)
 
@@ -76,10 +79,18 @@ def write_target_file(rel_path: str, code: str):
     try:
         target_file.relative_to(REPO_DIR)
     except ValueError:
-        log(f"Защита пути: попытка записи вне репозитория ({rel_path})")
+        log(f"Защита пути: отклонена попытка записи вне репозитория ({rel_path})")
         return False
 
     clean_content = sanitize_code(code)
+
+    if clean_path.endswith(".py"):
+        try:
+            ast.parse(clean_content)
+        except SyntaxError as e:
+            log(f"Синтаксическая ошибка AST в коде для {clean_path}: {e}")
+            return False
+
     target_file.parent.mkdir(parents=True, exist_ok=True)
     target_file.write_text(clean_content + "\n", encoding="utf-8")
     log(f"Обновлен файл: {clean_path}")
@@ -90,21 +101,18 @@ def apply_files_from_response(content: str):
         return False
 
     updated = False
-    # Формат 1: === FILE: path ===
     for m in re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
     if updated:
         return True
 
-    # Формат 2: ```python:path/to/file.py
     for m in re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
     if updated:
         return True
 
-    # Формат 3: Заголовок файла перед блоком кода
     for m in re.finditer(r"(?:###\s*|\*\*)?(?:Файл:\s*|File:\s*)?`?([a-zA-Z0-9_\-\./]+\.py)`?\*?\*?\s*\r?\n```(?:python)?\r?\n(.*?)```", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
@@ -130,38 +138,50 @@ def run_tests():
     res = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO_DIR, capture_output=True, text=True)
     return res.returncode == 0, res.stdout + res.stderr
 
-def call_cptr_agent(task_text):
+def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
+    feedback_section = ""
+    if error_feedback:
+        feedback_section = f"""
+ВНИМАНИЕ! ПРЕДЫДУЩИЙ ВАРИАНТ КОДА ЗАВЕРШИЛСЯ ОШИБКОЙ В ТЕСТАХ:
+{error_feedback}
+
+Внимательно изучи трейсбек ошибки выше. Исправь все ненайденные переменные (NameError), отсутствующие импорты (ImportError), несовпадения в схеме БД или сломанные тесты.
+"""
+
     prompt = f"""Ты — ведущий Python-разработчик музыкального плеера.
 Рабочая директория: {REPO_DIR}
 Текущая задача: {task_text}
-
+{feedback_section}
 ТЕКУЩИЙ КОД ПРОЕКТА:
 {repo_files}
 
 ПРАВИЛА ГЕНЕРАЦИИ:
-1. Не используй вызовы внешних инструментов или функций.
+1. Не вызывай внешние инструменты или CLI-команды.
 2. Выводи каждый создаваемый или изменяемый файл целиком строго в блоках:
 
 === FILE: путь/к/файлу.py ===
-# полный код файла БЕЗ дополнительных markdown-блоков ```python
+# полный рабочий код файла без markdown-тегов внутри
 === END FILE ===
 
-3. Обязательно создай или дополни тесты в папке tests/ под новую функциональность.
-4. Предоставляй только полный рабочий код без сокращений."""
+3. ОБЯЗАТЕЛЬНЫЙ ЧЕКЛИСТ КАЧЕСТВА:
+- Импорты: каждый используемый модуль или объект (например, scanner, mutagen, asynccontextmanager, pytest) ДОЛЖЕН быть явно импортирован в начале файла. Никаких неявных глобальных сущностей.
+- База данных: сохраняй все существующие поля таблицы tracks (path, title, artist, album, genre, year, track_number, duration, cover_path, source, external_id, cache_path). Не удаляй существующие колонки!
+- Тесты: используй фикстуры temp_db и temp_dir из conftest.py. Не создавай базу данных вручную в обход conftest.
+- Только полный код: никаких псевдокодов, многоточий и сокращений."""
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
         headers["Authorization"] = f"Bearer {CPTR_API_KEY}"
 
-    log("Отправка задачи агенту cptr...")
+    log("Отправка запроса агенту cptr (temperature=0.0)...")
     resp = requests.post(
         CPTR_ENDPOINT,
         headers=headers,
         json={
             "model": CPTR_MODEL,
             "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.2,
+            "temperature": 0.0,
             "reasoning_effort": "high",
             "max_tokens": 8192,
         },
@@ -182,23 +202,34 @@ def main():
         return
 
     log(f"Начало работы над задачей: {task_text}")
-    result_text = call_cptr_agent(task_text)
-    if not result_text:
-        log("Модель вернула пустой ответ. Откат.")
-        rollback()
-        return
+    last_error = None
+    task_passed = False
 
-    log("Ответ модели получен. Применяем изменения к файлам...")
-    applied = apply_files_from_response(result_text)
-    if not applied:
-        log("Модель не вернула файлы в ожидаемом формате. Откат.")
-        rollback()
-        return
+    for attempt in range(1, MAX_ATTEMPTS + 1):
+        log(f"--- Попытка {attempt} из {MAX_ATTEMPTS} ---")
+        result_text = call_cptr_agent(task_text, error_feedback=last_error)
+        if not result_text:
+            log("Модель вернула пустой ответ.")
+            last_error = "Модель вернула пустой ответ. Предоставь полный рабочий код файлов в блоках === FILE: путь === ... === END FILE ==="
+            continue
 
-    ok, test_out = run_tests()
-    if not ok:
-        log(f"Тесты завершились с ошибкой:\n{test_out}")
-        log("Изменения сбрасываются.")
+        applied = apply_files_from_response(result_text)
+        if not applied:
+            log("Не удалось применить файлы из ответа модели (синтаксическая ошибка или неверный формат).")
+            last_error = "Файлы не применились. Убедись, что код синтаксически корректен (нет SyntaxError) и заключен в === FILE: путь === ... === END FILE ==="
+            continue
+
+        ok, test_out = run_tests()
+        if ok:
+            log(f"Тесты успешно пройдены на попытке {attempt}!")
+            task_passed = True
+            break
+
+        log(f"Тесты провалились на попытке {attempt}:\n{test_out}")
+        last_error = test_out
+
+    if not task_passed:
+        log(f"Задача не решена за {MAX_ATTEMPTS} попыток. Откат изменений.")
         rollback()
         return
 
