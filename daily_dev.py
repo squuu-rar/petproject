@@ -187,17 +187,23 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         return ""
 
     message = choices[0].get("message", {})
-    reasoning = message.get("reasoning_content") or ""
+    reasoning = (
+        message.get("reasoning")
+        or message.get("reasoning_content")
+        or message.get("thinking")
+        or ""
+    )
     content = message.get("content") or ""
 
+    log(f"Ollama ответ: content={len(content)} симв., reasoning={len(reasoning)} симв.")
     if reasoning.strip():
         log("--- Ход мыслей модели (Reasoning) ---")
-        for r_line in reasoning.strip().splitlines()[:20]:
+        for r_line in reasoning.strip().splitlines()[:15]:
             log(f"CoT: {r_line}")
-        if len(reasoning.strip().splitlines()) > 20:
-            log("CoT: ... [рассуждения продолжаются в полном логе]")
 
-    combined_output = f"{reasoning}\n{content}".strip() if not content.strip() else content
+    combined_output = f"{content}
+
+{reasoning}".strip()
     return combined_output
 
 def main():
