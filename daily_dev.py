@@ -12,11 +12,12 @@ REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 
-_raw_endpoint = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions").strip()
-_url_match = re.search(r"https?://[0-9a-zA-Z.:]+(?:/[^\s\]\)\"']*)?", _raw_endpoint)
-CPTR_ENDPOINT = _url_match.group(0) if _url_match else "http://127.0.0.1:11434/v1/chat/completions"
+_raw_ep = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions").strip()
+if "](" in _raw_ep:
+    _raw_ep = _raw_ep.split("](")[-1]
+CPTR_ENDPOINT = _raw_ep.strip("[]()\"' \t\r\n")
 
-CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma4-26b-fast:latest").strip()
+CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest").strip()
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
 MAX_ATTEMPTS = 3
@@ -83,7 +84,7 @@ def write_target_file(rel_path: str, code: str):
     try:
         target_file.relative_to(REPO_DIR)
     except ValueError:
-        log(f"Защита пути: попытка записи вне репозитория ({rel_path})")
+        log(f"Защита пути: отклонена запись вне репозитория ({rel_path})")
         return False
 
     clean_content = sanitize_code(code)
@@ -138,30 +139,28 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
 
     system_prompt = (
-        "Ты — ведущий Python-инженер проекта. Твоя цель — выдать готовый рабочий код.\n"
-        "КРИТИЧЕСКОЕ ПРАВИЛО: НЕ ПИШИ ВСТУПЛЕНИЙ, РАССУЖДЕНИЙ ИЛИ АНАЛИЗА.\n"
-        "НЕ используй конструкции 'The user wants me to...', 'Let us see...', 'I will...'.\n"
-        "Начинай ответ СТРОГО с первого символа: === FILE: путь/к/файлу.py ===\n\n"
-        "Формат блоков:\n"
+        "Ты — ведущий Python-инженер проекта. Твоя задача — реализовать функционал качественно и надежно.\n"
+        "Сначала ты можешь провести анализ: обдумать архитектуру, типы данных, граничные случаи и тесты.\n"
+        "После рассуждений ты ОБЯЗАТЕЛЬНО должен предоставить полный рабочий код в блоках следующего вида:\n\n"
         "=== FILE: путь/к/файлу.py ===\n"
-        "# полный код файла БЕЗ тройных кавычек ``` внутри\n"
+        "# полный рабочий код файла без сокращений\n"
         "=== END FILE ===\n\n"
         "Требования к коду:\n"
-        "1. Явные импорты всех сущностей (например, import mutagen, pathlib, pytest) в начале файла.\n"
-        "2. Для тестов используй фикстуры temp_db и tmp_path.\n"
-        "3. Только полный код, без сокращений."
+        "1. Явные импорты всех используемых модулей в начале каждого файла.\n"
+        "2. Для тестов использовать pytest, фикстуры tmp_path и существующие хелперы.\n"
+        "3. Не оставлять заглушек 'pass' или '...'. Только реальная реализация."
     )
 
     feedback_text = ""
     if error_feedback:
-        feedback_text = f"\nПРЕДЫДУЩАЯ ВЕРСИЯ УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nИсправь ошибку выше!\n"
+        feedback_text = f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nПроанализируй ошибку и исправь её!\n"
 
     user_prompt = f"""Задача: {task_text}
 {feedback_text}
 ТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:
 {repo_files}
 
-Начни свой ответ СРАЗУ с блока === FILE:"""
+Обдумай решение и выведи результирующие файлы в формате === FILE: ... ==="""
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
@@ -173,12 +172,12 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.0,
-        "max_tokens": 8192,
+        "temperature": 0.1,
+        "max_tokens": 10240,
     }
 
-    log(f"Отправка запроса в Ollama ({CPTR_MODEL}) по адресу {CPTR_ENDPOINT}...")
-    resp = requests.post(CPTR_ENDPOINT, headers=headers, json=payload, timeout=(15, 1800))
+    log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
+    resp = requests.post(CPTR_ENDPOINT, headers=headers, json=payload, timeout=(15, 2400))
     resp.raise_for_status()
     data = resp.json()
 
@@ -188,11 +187,18 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         return ""
 
     message = choices[0].get("message", {})
+    reasoning = message.get("reasoning_content") or ""
     content = message.get("content") or ""
-    if not content.strip() and "reasoning_content" in message:
-        content = message["reasoning_content"]
 
-    return content or ""
+    if reasoning.strip():
+        log("--- Ход мыслей модели (Reasoning) ---")
+        for r_line in reasoning.strip().splitlines()[:20]:
+            log(f"CoT: {r_line}")
+        if len(reasoning.strip().splitlines()) > 20:
+            log("CoT: ... [рассуждения продолжаются в полном логе]")
+
+    combined_output = f"{reasoning}\n{content}".strip() if not content.strip() else content
+    return combined_output
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
@@ -212,13 +218,13 @@ def main():
         result_text = call_cptr_agent(task_text, error_feedback=last_error)
         if not result_text:
             log("Модель вернула пустой ответ.")
-            last_error = "Ответ был пустым. Начни СТРОГО с блока === FILE: путь ==="
+            last_error = "Ответ был пустым. Не забудь сформировать итоговые блоки === FILE: путь ==="
             continue
 
         applied = apply_files_from_response(result_text)
         if not applied:
-            log("Не удалось извлечь файлы. Проверьте формат ответа.")
-            last_error = "Файлы не найдены. Выведи код строго в блоках === FILE: путь === код === END FILE ==="
+            log("Не удалось извлечь файлы из ответа (модель увлеклась рассуждениями без блоков файлов).")
+            last_error = "Файлы не найдены. Обязательно добавь результирующий код в блоках === FILE: путь === код === END FILE ==="
             continue
 
         ok, test_out = run_tests()
