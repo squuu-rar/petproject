@@ -11,8 +11,8 @@ import requests
 REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
-CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:8000/v1/chat/completions")
-CPTR_MODEL = os.environ.get("CPTR_MODEL", "cptr/squ")
+CPTR_ENDPOINT = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions")
+CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest")
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 
 MAX_ATTEMPTS = 3
@@ -37,7 +37,7 @@ def run(cmd, cwd=REPO_DIR, check=True):
     return res
 
 def rollback():
-    log("Откат всех незакоммиченных изменений (git reset & clean)...")
+    log("Откат изменений (git reset & clean)...")
     run(["git", "reset", "--hard", "HEAD"], check=False)
     run(["git", "clean", "-fd"], check=False)
 
@@ -83,7 +83,6 @@ def write_target_file(rel_path: str, code: str):
         return False
 
     clean_content = sanitize_code(code)
-
     if clean_path.endswith(".py"):
         try:
             ast.parse(clean_content)
@@ -110,13 +109,6 @@ def apply_files_from_response(content: str):
     for m in re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
-    if updated:
-        return True
-
-    for m in re.finditer(r"(?:###\s*|\*\*)?(?:Файл:\s*|File:\s*)?`?([a-zA-Z0-9_\-\./]+\.py)`?\*?\*?\s*\r?\n```(?:python)?\r?\n(.*?)```", content, re.DOTALL):
-        if write_target_file(m.group(1), m.group(2)):
-            updated = True
-
     return updated
 
 def has_staged_code_changes():
@@ -140,56 +132,63 @@ def run_tests():
 
 def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
-    feedback_section = ""
+
+    system_prompt = (
+        "Ты — ведущий Python-инженер. Твоя единственная цель — выдать готовый рабочий код.\n"
+        "КРИТИЧЕСКИ ВАЖНОЕ ПРАВИЛО: НЕ ПИШИ ВНУТРЕННИХ РАССУЖДЕНИЙ, ВСТУПЛЕНИЙ ИЛИ АНАЛИЗА.\n"
+        "НЕ используй конструкции вроде 'The user wants me to...', 'Let us see...', 'I will create...'.\n"
+        "Начинай свой ответ СТРОГО с первого символа первой строки: === FILE: путь/к/файлу.py ===\n\n"
+        "Формат вывода:\n"
+        "=== FILE: путь/к/файлу.py ===\n"
+        "# полный рабочий код без обрамляющих markdown блоков ```\n"
+        "=== END FILE ===\n\n"
+        "Требования к коду:\n"
+        "1. Явные импорты всех сущностей в начале файла (например, import mutagen, pathlib, pytest).\n"
+        "2. Для тестов используй фикстуры temp_db и tmp_path.\n"
+        "3. Только полный код, никаких многоточий."
+    )
+
+    feedback_text = ""
     if error_feedback:
-        feedback_section = f"""
-ВНИМАНИЕ! ПРЕДЫДУЩИЙ ВАРИАНТ КОДА ЗАВЕРШИЛСЯ ОШИБКОЙ В ТЕСТАХ:
-{error_feedback}
+        feedback_text = f"\nПРЕДЫДУЩАЯ ВЕРСИЯ УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nИсправь ошибку выше!\n"
 
-Внимательно изучи трейсбек ошибки выше. Исправь все ненайденные переменные (NameError), отсутствующие импорты (ImportError), несовпадения в схеме БД или сломанные тесты.
-"""
-
-    prompt = f"""Ты — ведущий Python-разработчик музыкального плеера.
-Рабочая директория: {REPO_DIR}
-Текущая задача: {task_text}
-{feedback_section}
-ТЕКУЩИЙ КОД ПРОЕКТА:
+    user_prompt = f"""Задача: {task_text}
+{feedback_text}
+ТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:
 {repo_files}
 
-ПРАВИЛА ГЕНЕРАЦИИ:
-1. Не вызывай внешние инструменты или CLI-команды.
-2. Выводи каждый создаваемый или изменяемый файл целиком строго в блоках:
-
-=== FILE: путь/к/файлу.py ===
-# полный рабочий код файла без markdown-тегов внутри
-=== END FILE ===
-
-3. ОБЯЗАТЕЛЬНЫЙ ЧЕКЛИСТ КАЧЕСТВА:
-- Импорты: каждый используемый модуль или объект (например, scanner, mutagen, asynccontextmanager, pytest) ДОЛЖЕН быть явно импортирован в начале файла. Никаких неявных глобальных сущностей.
-- База данных: сохраняй все существующие поля таблицы tracks (path, title, artist, album, genre, year, track_number, duration, cover_path, source, external_id, cache_path). Не удаляй существующие колонки!
-- Тесты: используй фикстуры temp_db и temp_dir из conftest.py. Не создавай базу данных вручную в обход conftest.
-- Только полный код: никаких псевдокодов, многоточий и сокращений."""
+Начни свой ответ СРАЗУ с блока === FILE:"""
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
         headers["Authorization"] = f"Bearer {CPTR_API_KEY}"
 
-    log("Отправка запроса агенту cptr (temperature=0.0)...")
-    resp = requests.post(
-        CPTR_ENDPOINT,
-        headers=headers,
-        json={
-            "model": CPTR_MODEL,
-            "messages": [{"role": "user", "content": prompt}],
-            "temperature": 0.0,
-            "max_tokens": 8192,
-        },
-        timeout=(15, 1800),
-    )
+    payload = {
+        "model": CPTR_MODEL,
+        "messages": [
+            {"role": "system", "content": system_prompt},
+            {"role": "user", "content": user_prompt},
+        ],
+        "temperature": 0.0,
+        "max_tokens": 8192,
+    }
+
+    log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
+    resp = requests.post(CPTR_ENDPOINT, headers=headers, json=payload, timeout=(15, 1800))
     resp.raise_for_status()
     data = resp.json()
-    message = data.get("choices", [{}])[0].get("message", {})
-    return message.get("content") or ""
+
+    choices = data.get("choices", [])
+    if not choices:
+        log(f"Пустой ответ API: {data}")
+        return ""
+
+    message = choices[0].get("message", {})
+    content = message.get("content") or ""
+    if not content.strip() and "reasoning_content" in message:
+        content = message["reasoning_content"]
+
+    return content or ""
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
@@ -209,13 +208,13 @@ def main():
         result_text = call_cptr_agent(task_text, error_feedback=last_error)
         if not result_text:
             log("Модель вернула пустой ответ.")
-            last_error = "Модель вернула пустой ответ. Предоставь полный рабочий код файлов в блоках === FILE: путь === ... === END FILE ==="
+            last_error = "Ответ был пустым. Начни СТРОГО с блока === FILE: путь ==="
             continue
 
         applied = apply_files_from_response(result_text)
         if not applied:
-            log("Не удалось применить файлы из ответа модели (синтаксическая ошибка или неверный формат).")
-            last_error = "Файлы не применились. Убедись, что код синтаксически корректен (нет SyntaxError) и заключен в === FILE: путь === ... === END FILE ==="
+            log("Не удалось извлечь файлы. Проверьте формат.")
+            last_error = "Файлы не найдены. Выведи код в формате === FILE: путь === код === END FILE ==="
             continue
 
         ok, test_out = run_tests()
@@ -234,7 +233,7 @@ def main():
 
     run(["git", "add", "-A"])
     if not has_staged_code_changes():
-        log("Нет фактических изменений в кодовой базе.")
+        log("Нет фактических изменений.")
         rollback()
         return
 
