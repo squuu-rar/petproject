@@ -2,6 +2,7 @@ import abc
 import pathlib
 from typing import Any
 import mutagen
+from ytmusicapi import YTMusic
 
 class StreamSource(abc.ABC):
     """Abstract base class for stream sources.
@@ -102,3 +103,51 @@ class LocalStorageProvider(StreamSource):
             data["title"] = self.file_path.stem
 
         return data
+
+class RemoteDiscoveryProvider(StreamSource):
+    """Provider for searching and streaming tracks from YouTube Music."""
+
+    def __init__(self, ytmusic: YTMusic, video_id: str = None):
+        self.ytmusic = ytmusic
+        self.video_id = video_id
+
+    def search(self, query: str) -> list[dict[str, Any]]:
+        """Search for songs on YouTube Music."""
+        try:
+            results = self.ytmusic.search(query, filter="songs")
+            search_results = []
+            for r in results:
+                if r.get("resultType") == "song":
+                    search_results.append({
+                        "title": r.get("title"),
+                        "artist": r.get("artists", [{}])[0].get("name") if r.get("artists") else None,
+                        "album": r.get("album", {}).get("name") if r.get("album") else None,
+                        "video_id": r.get("videoId"),
+                    })
+            return search_results
+        except Exception:
+            return []
+
+    def get_stream_url(self) -> str:
+        """Return the YouTube watch URL."""
+        if not self.video_id:
+            raise ValueError("No video_id provided for RemoteDiscoveryProvider")
+        return f"https://www.youtube.com/watch?v={self.video_id}"
+
+    def get_metadata(self) -> dict[str, Any]:
+        """Fetch detailed metadata for the specific video."""
+        if not self.video_id:
+            return {}
+
+        try:
+            song = self.ytmusic.get_song(self.video_id)
+            return {
+                "title": song.get("title"),
+                "artist": song.get("artists", [{}])[0].get("name") if song.get("artists") else None,
+                "album": song.get("album", {}).get("name") if song.get("album") else None,
+                "duration": song.get("duration"),
+                "source": "remote",
+                "external_id": self.video_id,
+            }
+        except Exception:
+            return {}

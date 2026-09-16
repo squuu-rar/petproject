@@ -1,6 +1,6 @@
-import pathlib
 import pytest
-from providers import LocalStorageProvider
+from unittest.mock import MagicMock
+from providers import LocalStorageProvider, RemoteDiscoveryProvider
 
 def test_local_storage_provider_stream_url(tmp_path):
     """Test that get_stream_url returns the absolute path."""
@@ -33,7 +33,6 @@ def test_local_storage_provider_metadata_full(tmp_path, monkeypatch):
     }
     mock_file = MockFile(mock_tags, MockInfo())
 
-    # Mock mutagen.File to return our mock_file
     monkeypatch.setattr("mutagen.File", lambda path, easy=True: mock_file)
 
     provider = LocalStorageProvider(file_path)
@@ -61,7 +60,6 @@ def test_local_storage_provider_metadata_minimal(tmp_path, monkeypatch):
             self.tags = tags
             self.info = info
 
-    # Empty tags
     mock_file = MockFile({}, MockInfo())
     monkeypatch.setattr("mutagen.File", lambda path, easy=True: mock_file)
 
@@ -77,11 +75,79 @@ def test_local_storage_provider_invalid_file(tmp_path, monkeypatch):
     """Test behavior when file is not a valid audio file."""
     file_path = tmp_path / "corrupt.mp3"
     file_path.touch()
-
-    # Simulate mutagen returning None for non-audio files
     monkeypatch.setattr("mutagen.File", lambda path, easy=True: None)
 
     provider = LocalStorageProvider(file_path)
     metadata = provider.get_metadata()
 
+    assert metadata == {}
+
+def test_remote_discovery_provider_search():
+    """Test global search functionality."""
+    mock_yt = MagicMock()
+    mock_yt.search.return_value = [
+        {
+            "resultType": "song",
+            "title": "Song 1",
+            "artists": [{"name": "Artist 1"}],
+            "album": {"name": "Album 1"},
+            "videoId": "vid1"
+        },
+        {
+            "resultType": "video",
+            "title": "Video 1",
+            "artists": [{"name": "Artist 1"}],
+            "videoId": "vid2"
+        }
+    ]
+    
+    provider = RemoteDiscoveryProvider(mock_yt)
+    results = provider.search("query")
+    
+    assert len(results) == 1
+    assert results[0]["title"] == "Song 1"
+    assert results[0]["artist"] == "Artist 1"
+    assert results[0]["video_id"] == "vid1"
+
+def test_remote_discovery_provider_metadata():
+    """Test metadata retrieval for a specific video."""
+    mock_yt = MagicMock()
+    mock_yt.get_song.return_value = {
+        "title": "Test Song",
+        "artists": [{"name": "Test Artist"}],
+        "album": {"name": "Test Album"},
+        "duration": 200,
+        "videoId": "abc123"
+    }
+    
+    provider = RemoteDiscoveryProvider(mock_yt, video_id="abc123")
+    metadata = provider.get_metadata()
+    
+    assert metadata["title"] == "Test Song"
+    assert metadata["artist"] == "Test Artist"
+    assert metadata["album"] == "Test Album"
+    assert metadata["duration"] == 200
+    assert metadata["source"] == "remote"
+    assert metadata["external_id"] == "abc123"
+
+def test_remote_discovery_provider_stream_url():
+    """Test stream URL generation."""
+    provider = RemoteDiscoveryProvider(MagicMock(), video_id="xyz789")
+    assert provider.get_stream_url() == "https://www.youtube.com/watch?v=xyz789"
+
+def test_remote_discovery_provider_no_id_error():
+    """Test error when no video_id is provided."""
+    provider = RemoteDiscoveryProvider(MagicMock())
+    with pytest.raises(ValueError, match="No video_id provided"):
+        provider.get_stream_url()
+    assert provider.get_metadata() == {}
+
+def test_remote_discovery_provider_api_error():
+    """Test handling of API errors."""
+    mock_yt = MagicMock()
+    mock_yt.get_song.side_effect = Exception("API Error")
+    
+    provider = RemoteDiscoveryProvider(mock_yt, video_id="error_id")
+    metadata = provider.get_metadata()
+    
     assert metadata == {}
