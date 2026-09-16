@@ -11,10 +11,13 @@ import requests
 REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
+
 _raw_endpoint = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions").strip()
-CPTR_ENDPOINT = _raw_endpoint.split("](")[-1].strip("[]()"' ") if "](" in _raw_endpoint else _raw_endpoint.strip("[]()"' ")
-CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest")
-CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
+_url_match = re.search(r"https?://[0-9a-zA-Z.:]+(?:/[^\s\]\)\"']*)?", _raw_endpoint)
+CPTR_ENDPOINT = _url_match.group(0) if _url_match else "http://127.0.0.1:11434/v1/chat/completions"
+
+CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma4-26b-fast:latest").strip()
+CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
 MAX_ATTEMPTS = 3
 IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
@@ -38,7 +41,7 @@ def run(cmd, cwd=REPO_DIR, check=True):
     return res
 
 def rollback():
-    log("Откат изменений (git reset & clean)...")
+    log("Откат незакоммиченных изменений (git reset & clean)...")
     run(["git", "reset", "--hard", "HEAD"], check=False)
     run(["git", "clean", "-fd"], check=False)
 
@@ -80,7 +83,7 @@ def write_target_file(rel_path: str, code: str):
     try:
         target_file.relative_to(REPO_DIR)
     except ValueError:
-        log(f"Защита пути: отклонена попытка записи вне репозитория ({rel_path})")
+        log(f"Защита пути: попытка записи вне репозитория ({rel_path})")
         return False
 
     clean_content = sanitize_code(code)
@@ -135,18 +138,18 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
 
     system_prompt = (
-        "Ты — ведущий Python-инженер. Твоя единственная цель — выдать готовый рабочий код.\n"
-        "КРИТИЧЕСКИ ВАЖНОЕ ПРАВИЛО: НЕ ПИШИ ВНУТРЕННИХ РАССУЖДЕНИЙ, ВСТУПЛЕНИЙ ИЛИ АНАЛИЗА.\n"
-        "НЕ используй конструкции вроде 'The user wants me to...', 'Let us see...', 'I will create...'.\n"
-        "Начинай свой ответ СТРОГО с первого символа первой строки: === FILE: путь/к/файлу.py ===\n\n"
-        "Формат вывода:\n"
+        "Ты — ведущий Python-инженер проекта. Твоя цель — выдать готовый рабочий код.\n"
+        "КРИТИЧЕСКОЕ ПРАВИЛО: НЕ ПИШИ ВСТУПЛЕНИЙ, РАССУЖДЕНИЙ ИЛИ АНАЛИЗА.\n"
+        "НЕ используй конструкции 'The user wants me to...', 'Let us see...', 'I will...'.\n"
+        "Начинай ответ СТРОГО с первого символа: === FILE: путь/к/файлу.py ===\n\n"
+        "Формат блоков:\n"
         "=== FILE: путь/к/файлу.py ===\n"
-        "# полный рабочий код без обрамляющих markdown блоков ```\n"
+        "# полный код файла БЕЗ тройных кавычек ``` внутри\n"
         "=== END FILE ===\n\n"
         "Требования к коду:\n"
-        "1. Явные импорты всех сущностей в начале файла (например, import mutagen, pathlib, pytest).\n"
+        "1. Явные импорты всех сущностей (например, import mutagen, pathlib, pytest) в начале файла.\n"
         "2. Для тестов используй фикстуры temp_db и tmp_path.\n"
-        "3. Только полный код, никаких многоточий."
+        "3. Только полный код, без сокращений."
     )
 
     feedback_text = ""
@@ -174,7 +177,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         "max_tokens": 8192,
     }
 
-    log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
+    log(f"Отправка запроса в Ollama ({CPTR_MODEL}) по адресу {CPTR_ENDPOINT}...")
     resp = requests.post(CPTR_ENDPOINT, headers=headers, json=payload, timeout=(15, 1800))
     resp.raise_for_status()
     data = resp.json()
@@ -214,8 +217,8 @@ def main():
 
         applied = apply_files_from_response(result_text)
         if not applied:
-            log("Не удалось извлечь файлы. Проверьте формат.")
-            last_error = "Файлы не найдены. Выведи код в формате === FILE: путь === код === END FILE ==="
+            log("Не удалось извлечь файлы. Проверьте формат ответа.")
+            last_error = "Файлы не найдены. Выведи код строго в блоках === FILE: путь === код === END FILE ==="
             continue
 
         ok, test_out = run_tests()
