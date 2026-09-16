@@ -62,6 +62,14 @@ def get_repo_context():
         context.append(f"--- Файл: {rel} ---\n{p.read_text(encoding='utf-8')}")
     return "\n\n".join(context)
 
+def sanitize_code(code: str) -> str:
+    lines = code.strip().splitlines()
+    if lines and lines[0].strip().startswith("```"):
+        lines = lines[1:]
+    if lines and lines[-1].strip().startswith("```"):
+        lines = lines[:-1]
+    return "\n".join(lines).strip()
+
 def write_target_file(rel_path: str, code: str):
     clean_path = rel_path.strip("`* \t\r\n").lstrip("/\\")
     target_file = (REPO_DIR / clean_path).resolve()
@@ -71,8 +79,9 @@ def write_target_file(rel_path: str, code: str):
         log(f"Защита пути: попытка записи вне репозитория ({rel_path})")
         return False
 
+    clean_content = sanitize_code(code)
     target_file.parent.mkdir(parents=True, exist_ok=True)
-    target_file.write_text(code.strip() + "\n", encoding="utf-8")
+    target_file.write_text(clean_content + "\n", encoding="utf-8")
     log(f"Обновлен файл: {clean_path}")
     return True
 
@@ -81,7 +90,7 @@ def apply_files_from_response(content: str):
         return False
 
     updated = False
-    # Формат 1: === FILE: path === с защитой от поглощения следующего файла
+    # Формат 1: === FILE: path ===
     for m in re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL):
         if write_target_file(m.group(1), m.group(2)):
             updated = True
@@ -131,15 +140,15 @@ def call_cptr_agent(task_text):
 {repo_files}
 
 ПРАВИЛА ГЕНЕРАЦИИ:
-1. Не используй вызовы внешних инструментов или функций (list_directory, write_file и т.д.).
-2. Выводи каждый создаваемый или изменяемый файл целиком строго в блоках следующего вида:
+1. Не используй вызовы внешних инструментов или функций.
+2. Выводи каждый создаваемый или изменяемый файл целиком строго в блоках:
 
 === FILE: путь/к/файлу.py ===
-# полный код файла
+# полный код файла БЕЗ дополнительных markdown-блоков ```python
 === END FILE ===
 
 3. Обязательно создай или дополни тесты в папке tests/ под новую функциональность.
-4. Предоставляй только полный рабочий код без псевдокода и сокращений."""
+4. Предоставляй только полный рабочий код без сокращений."""
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
