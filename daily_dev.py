@@ -12,8 +12,7 @@ REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 _raw_endpoint = os.environ.get("CPTR_ENDPOINT", "http://127.0.0.1:11434/v1/chat/completions").strip()
-_url_match = re.search(r"https?://[^\s\]\)"']+", _raw_endpoint)
-CPTR_ENDPOINT = _url_match.group(0) if _url_match else "http://127.0.0.1:11434/v1/chat/completions" 
+CPTR_ENDPOINT = _raw_endpoint.split("](")[-1].strip("[]()"' ") if "](" in _raw_endpoint else _raw_endpoint.strip("[]()"' ")
 CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest")
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "")
 
