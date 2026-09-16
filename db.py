@@ -24,16 +24,25 @@ def init_db():
             year INTEGER,
             track_number INTEGER,
             duration REAL,
-            cover_path TEXT
+            cover_path TEXT,
+            source TEXT DEFAULT 'local',
+            external_id TEXT,
+            cache_path TEXT
         )
         """
     )
     cur.execute("PRAGMA table_info(tracks)")
     columns = [col[1] for col in cur.fetchall()]
-    if "genre" not in columns:
-        cur.execute("ALTER TABLE tracks ADD COLUMN genre TEXT")
-    if "cover_path" not in columns:
-        cur.execute("ALTER TABLE tracks ADD COLUMN cover_path TEXT")
+    migrations = [
+        ("genre", "TEXT"),
+        ("cover_path", "TEXT"),
+        ("source", "TEXT DEFAULT 'local'"),
+        ("external_id", "TEXT"),
+        ("cache_path", "TEXT"),
+    ]
+    for col_name, col_type in migrations:
+        if col_name not in columns:
+            cur.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_type}")
     conn.commit()
     conn.close()
 

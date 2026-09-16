@@ -7,7 +7,7 @@
 - [x] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
 - [x] scanner: extract embedded cover art (APIC/FLAC picture) and cache to static/covers
 
-- [ ] db: add source field ('local'|'remote'), external_id and cache_path to tracks schema
+- [x] db: add source field ('local'|'remote'), external_id and cache_path to tracks schema
 - [ ] providers: create base StreamSource abstract class with get_stream_url and get_metadata
 - [ ] providers: implement LocalStorageProvider reading files from disk
 - [ ] providers: implement RemoteDiscoveryProvider using ytmusicapi for global track search

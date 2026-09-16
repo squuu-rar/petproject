@@ -54,6 +54,10 @@ def _extract_track_data(file_path: pathlib.Path):
     if not data.get("title"):
         data["title"] = file_path.stem
 
+    data["source"] = "local"
+    data["external_id"] = None
+    data["cache_path"] = None
+
     return data, f
 
 def _extract_cover_art(file_path: pathlib.Path, f=None) -> str | None:
@@ -61,13 +65,11 @@ def _extract_cover_art(file_path: pathlib.Path, f=None) -> str | None:
         return None
     picture_data = None
 
-    # 1. FLAC / OGG / Opus
     if hasattr(f, "pictures"):
         pics = getattr(f, "pictures", None)
         if pics and len(pics) > 0:
             picture_data = getattr(pics[0], "data", None)
 
-    # 2. Обработка ID3 / словарей тегов
     if not picture_data and hasattr(f, "tags"):
         tags = f.tags
         if isinstance(tags, dict):
@@ -89,7 +91,6 @@ def _extract_cover_art(file_path: pathlib.Path, f=None) -> str | None:
             except Exception:
                 pass
 
-    # 3. Прямое чтение бинарных тегов для реальных аудиофайлов
     if not picture_data and file_path.exists() and file_path.stat().st_size > 0:
         try:
             raw_audio = mutagen.File(file_path)
@@ -129,8 +130,8 @@ def _upsert_track(conn, track: dict, path_str: str):
     cur = conn.cursor()
     cur.execute(
         """
-        INSERT INTO tracks (path, title, artist, album, genre, year, track_number, duration, cover_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO tracks (path, title, artist, album, genre, year, track_number, duration, cover_path, source, external_id, cache_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(path) DO UPDATE SET
             title=excluded.title,
             artist=excluded.artist,
@@ -139,7 +140,10 @@ def _upsert_track(conn, track: dict, path_str: str):
             year=excluded.year,
             track_number=excluded.track_number,
             duration=excluded.duration,
-            cover_path=excluded.cover_path
+            cover_path=excluded.cover_path,
+            source=excluded.source,
+            external_id=excluded.external_id,
+            cache_path=excluded.cache_path
         """,
         (
             path_str,
@@ -151,6 +155,9 @@ def _upsert_track(conn, track: dict, path_str: str):
             track.get("track_number"),
             track.get("duration"),
             track.get("cover_path"),
+            track.get("source", "local"),
+            track.get("external_id"),
+            track.get("cache_path"),
         ),
     )
 
