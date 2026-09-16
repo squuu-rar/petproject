@@ -1,6 +1,7 @@
 import abc
+import pathlib
 from typing import Any
-
+import mutagen
 
 class StreamSource(abc.ABC):
     """Abstract base class for stream sources.
@@ -27,3 +28,77 @@ class StreamSource(abc.ABC):
         the source.
         """
         raise NotImplementedError()
+
+class LocalStorageProvider(StreamSource):
+    """Provider for reading audio files from the local file system."""
+
+    def __init__(self, file_path: pathlib.Path):
+        self.file_path = file_path
+
+    def get_stream_url(self) -> str:
+        """Return the absolute path of the file as a string."""
+        return str(self.file_path.absolute())
+
+    def get_metadata(self) -> dict[str, Any]:
+        """Extract metadata from the local file using mutagen."""
+        try:
+            f = mutagen.File(self.file_path, easy=True)
+        except Exception:
+            return {}
+
+        if f is None:
+            return {}
+
+        tags = getattr(f, "tags", None)
+        if not hasattr(tags, "get"):
+            tags = {}
+
+        # Initialize data with defaults
+        data = {
+            "title": None,
+            "artist": None,
+            "album": None,
+            "genre": None,
+            "year": None,
+            "track_number": None,
+            "duration": None,
+            "source": "local",
+        }
+
+        # Mapping based on scanner.py logic
+        mapping = {
+            "title": "title",
+            "artist": "artist",
+            "album": "album",
+            "genre": "genre",
+            "date": "year",
+            "tracknumber": "track_number",
+        }
+
+        for easy_k, db_k in mapping.items():
+            val = tags.get(easy_k)
+            if val:
+                data[db_k] = str(val[0])
+
+        # Parse track number (e.g., "1/12" -> 1)
+        if data.get("track_number"):
+            try:
+                data["track_number"] = int(str(data["track_number"]).split("/")[0])
+            except (ValueError, TypeError):
+                data["track_number"] = None
+
+        # Parse year (e.g., "2023-01-01" -> 2023)
+        if data.get("year"):
+            try:
+                data["year"] = int(str(data["year"])[:4])
+            except (ValueError, TypeError):
+                data["year"] = None
+
+        # Get duration from info
+        data["duration"] = getattr(getattr(f, "info", None), "length", None)
+
+        # Fallback title to filename if no title tag is present
+        if not data.get("title"):
+            data["title"] = self.file_path.stem
+
+        return data

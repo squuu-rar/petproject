@@ -9,7 +9,7 @@
 
 - [x] db: add source field ('local'|'remote'), external_id and cache_path to tracks schema
 - [x] providers: create base StreamSource abstract class with get_stream_url and get_metadata
-- [ ] providers: implement LocalStorageProvider reading files from disk
+- [x] providers: implement LocalStorageProvider reading files from disk
 - [ ] providers: implement RemoteDiscoveryProvider using ytmusicapi for global track search
 - [ ] providers: implement remote stream extraction using yt-dlp to get direct audio URLs
 
