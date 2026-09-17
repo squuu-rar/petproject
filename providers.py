@@ -2,6 +2,7 @@ import abc
 import pathlib
 from typing import Any
 import mutagen
+import yt_dlp
 from ytmusicapi import YTMusic
 
 class StreamSource(abc.ABC):
@@ -146,6 +147,49 @@ class RemoteDiscoveryProvider(StreamSource):
                 "artist": song.get("artists", [{}])[0].get("name") if song.get("artists") else None,
                 "album": song.get("album", {}).get("name") if song.get("album") else None,
                 "duration": song.get("duration"),
+                "source": "remote",
+                "external_id": self.video_id,
+            }
+        except Exception:
+            return {}
+
+class YoutubeStreamProvider(StreamSource):
+    """Provider for extracting direct audio stream URLs using yt-dlp."""
+
+    def __init__(self, video_id: str):
+        if not video_id:
+            raise ValueError("video_id is required")
+        self.video_id = video_id
+        self.url = f"https://www.youtube.com/watch?v={video_id}"
+
+    def _get_ydl_info(self) -> dict[str, Any]:
+        """Internal method to extract info using yt-dlp."""
+        ydl_opts = {
+            'format': 'bestaudio/best',
+            'quiet': True,
+            'noplaylist': True,
+            'no_warnings': True,
+        }
+        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+            return ydl.extract_info(self.url, download=False)
+
+    def get_stream_url(self) -> str:
+        """Return the direct audio stream URL."""
+        try:
+            info = self._get_ydl_info()
+            return info.get("url")
+        except Exception as e:
+            raise RuntimeError(f"Failed to extract stream URL: {e}")
+
+    def get_metadata(self) -> dict[str, Any]:
+        """Return metadata extracted via yt-dlp."""
+        try:
+            info = self._get_ydl_info()
+            return {
+                "title": info.get("title"),
+                "artist": info.get("uploader"),
+                "album": None,  # YouTube doesn't provide album info in standard way
+                "duration": info.get("duration"),
                 "source": "remote",
                 "external_id": self.video_id,
             }

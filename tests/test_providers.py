@@ -1,6 +1,6 @@
 import pytest
-from unittest.mock import MagicMock
-from providers import LocalStorageProvider, RemoteDiscoveryProvider
+from unittest.mock import MagicMock, patch
+from providers import LocalStorageProvider, RemoteDiscoveryProvider, YoutubeStreamProvider
 
 def test_local_storage_provider_stream_url(tmp_path):
     """Test that get_stream_url returns the absolute path."""
@@ -151,3 +151,51 @@ def test_remote_discovery_provider_api_error():
     metadata = provider.get_metadata()
     
     assert metadata == {}
+
+@patch("yt_dlp.YoutubeDL")
+def test_youtube_stream_provider_success(mock_ydl_class):
+    """Test successful extraction of direct URL and metadata."""
+    # Setup mock
+    mock_ydl_instance = mock_ydl_class.return_value.__enter__.return_value
+    mock_ydl_instance.extract_info.return_value = {
+        "url": "https://googlevideo.com/direct_audio_stream",
+        "title": "Direct Stream Title",
+        "uploader": "Direct Artist",
+        "duration": 120,
+    }
+
+    provider = YoutubeStreamProvider(video_id="test_vid")
+    
+    # Test URL
+    url = provider.get_stream_url()
+    assert url == "https://googlevideo.com/direct_audio_stream"
+    
+    # Test Metadata
+    metadata = provider.get_metadata()
+    assert metadata["title"] == "Direct Stream Title"
+    assert metadata["artist"] == "Direct Artist"
+    assert metadata["duration"] == 120
+    assert metadata["source"] == "remote"
+    assert metadata["external_id"] == "test_vid"
+
+@patch("yt_dlp.YoutubeDL")
+def test_youtube_stream_provider_error(mock_ydl_class):
+    """Test error handling when yt-dlp fails."""
+    # Setup mock to raise exception
+    mock_ydl_instance = mock_ydl_class.return_value.__enter__.return_value
+    mock_ydl_instance.extract_info.side_effect = Exception("Network Error")
+
+    provider = YoutubeStreamProvider(video_id="bad_vid")
+    
+    # Test URL error
+    with pytest.raises(RuntimeError, match="Failed to extract stream URL"):
+        provider.get_stream_url()
+    
+    # Test Metadata error (should return empty dict per implementation)
+    metadata = provider.get_metadata()
+    assert metadata == {}
+
+def test_youtube_stream_provider_no_id():
+    """Test error when no video_id is provided."""
+    with pytest.raises(ValueError, match="video_id is required"):
+        YoutubeStreamProvider(video_id="")

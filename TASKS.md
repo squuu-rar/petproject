@@ -11,7 +11,7 @@
 - [x] providers: create base StreamSource abstract class with get_stream_url and get_metadata
 - [x] providers: implement LocalStorageProvider reading files from disk
 - [x] providers: implement RemoteDiscoveryProvider using ytmusicapi for global track search
-- [ ] providers: implement remote stream extraction using yt-dlp to get direct audio URLs
+- [x] providers: implement remote stream extraction using yt-dlp to get direct audio URLs
 
 - [ ] api: GET /tracks with pagination, sorting and filter by source (local/remote)
 - [ ] api: GET /search?q= querying both local database and remote discovery provider
