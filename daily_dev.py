@@ -102,19 +102,34 @@ def write_target_file(rel_path: str, code: str):
 
 def apply_files_from_response(content: str):
     if not content or not isinstance(content, str):
-        return False
+        return False, "Ответ модели пуст"
 
-    updated = False
-    for m in re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL):
-        if write_target_file(m.group(1), m.group(2)):
-            updated = True
-    if updated:
-        return True
+    matches = list(re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL))
+    if not matches:
+        matches = list(re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL))
 
-    for m in re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL):
-        if write_target_file(m.group(1), m.group(2)):
-            updated = True
-    return updated
+    if not matches:
+        return False, "Блоки файлов === FILE: ... === не найдены в ответе"
+
+    # Валидация всей пачки перед записью (транзакционность)
+    staged = []
+    for m in matches:
+        rel_path = m.group(1).strip("`* \t\r\n").lstrip("/\\")
+        file_code = sanitize_code(m.group(2))
+        if rel_path.endswith(".py"):
+            try:
+                ast.parse(file_code)
+            except SyntaxError as e:
+                return False, f"Синтаксическая ошибка AST в {rel_path} на строке {e.lineno}: {e.msg}"
+        staged.append((rel_path, file_code))
+
+    for rel_path, file_code in staged:
+        target = (REPO_DIR / rel_path).resolve()
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_text(file_code + "\n", encoding="utf-8")
+        log(f"Обновлен файл: {rel_path}")
+
+    return True, None
 
 def has_staged_code_changes():
     status = run(["git", "status", "--porcelain"], check=False).stdout.strip().splitlines()
@@ -241,10 +256,10 @@ def main():
             fmt_warning = "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ! Сократи рассуждения и обязательно выведи файлы в блоках === FILE: путь ==="
             continue
 
-        applied = apply_files_from_response(result_text)
+        applied, parse_err = apply_files_from_response(result_text)
         if not applied:
             log("Не удалось извлечь файлы из ответа.")
-            fmt_warning = "ФАЙЛЫ НЕ НАЙДЕНЫ! Обязательно выведи код в блоках: === FILE: путь === ... === END FILE ==="
+            fmt_warning = f"ОШИБКА В СТРУКТУРЕ ФАЙЛОВ: {parse_err}. Исправь синтаксис!"
             continue
 
         ok, test_out = run_tests()
