@@ -226,21 +226,25 @@ def main():
         return
 
     log(f"Начало работы над задачей: {task_text}")
-    last_error = None
+    last_test_error = None
+    fmt_warning = ""
     task_passed = False
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         log(f"--- Попытка {attempt} из {MAX_ATTEMPTS} ---")
-        result_text = call_cptr_agent(task_text, error_feedback=last_error)
+        feedback = (fmt_warning + ("\n" + last_test_error if last_test_error else "")).strip() or None
+        result_text = call_cptr_agent(task_text, error_feedback=feedback)
+        fmt_warning = ""
+
         if not result_text:
             log("Модель вернула пустой ответ.")
-            last_error = "Ответ был пустым. Не забудь сформировать итоговые блоки === FILE: путь ==="
+            fmt_warning = "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ! Сократи рассуждения и обязательно выведи файлы в блоках === FILE: путь ==="
             continue
 
         applied = apply_files_from_response(result_text)
         if not applied:
             log("Не удалось извлечь файлы из ответа.")
-            last_error = "Файлы не найдены. Обязательно добавь код в блоках === FILE: путь === код === END FILE ==="
+            fmt_warning = "ФАЙЛЫ НЕ НАЙДЕНЫ! Обязательно выведи код в блоках: === FILE: путь === ... === END FILE ==="
             continue
 
         ok, test_out = run_tests()
@@ -250,7 +254,7 @@ def main():
             break
 
         log(f"Тесты провалились на попытке {attempt}:\n{test_out}")
-        last_error = test_out
+        last_test_error = test_out
 
     if not task_passed:
         log(f"Задача не решена за {MAX_ATTEMPTS} попыток. Откат изменений.")
