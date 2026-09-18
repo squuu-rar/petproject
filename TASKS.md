@@ -13,7 +13,7 @@
 - [x] providers: implement RemoteDiscoveryProvider using ytmusicapi for global track search
 - [x] providers: implement remote stream extraction using yt-dlp to get direct audio URLs
 
-- [ ] api: GET /tracks with pagination, sorting and filter by source (local/remote)
+- [x] api: GET /tracks with pagination, sorting and filter by source (local/remote)
 - [ ] api: GET /search?q= querying both local database and remote discovery provider
 - [ ] api: unified GET /stream/{track_id} supporting both local files and remote streaming
 - [ ] api: support HTTP 206 Range headers for seamless audio seeking on streams
