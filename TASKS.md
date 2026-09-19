@@ -14,7 +14,7 @@
 - [x] providers: implement remote stream extraction using yt-dlp to get direct audio URLs
 
 - [x] api: GET /tracks with pagination, sorting and filter by source (local/remote)
-- [ ] api: GET /search?q= querying both local database and remote discovery provider
+- [x] api: GET /search?q= querying both local database and remote discovery provider
 - [ ] api: unified GET /stream/{track_id} supporting both local files and remote streaming
 - [ ] api: support HTTP 206 Range headers for seamless audio seeking on streams
 - [ ] cache: implement LRU disk cache manager for remote tracks (auto-evict oldest unliked files)
