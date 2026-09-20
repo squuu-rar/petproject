@@ -47,6 +47,15 @@ def init_db():
     conn.commit()
     conn.close()
 
+def get_track_by_id(track_id: int) -> Optional[Dict[str, Any]]:
+    """Retrieves a single track by its ID."""
+    conn = get_db()
+    try:
+        row = conn.execute("SELECT * FROM tracks WHERE id = ?", (track_id,)).fetchone()
+        return dict(row) if row else None
+    finally:
+        conn.close()
+
 def get_tracks_paginated(
     limit: int,
     offset: int,

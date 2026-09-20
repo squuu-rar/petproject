@@ -1,17 +1,19 @@
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Depends
+from fastapi import FastAPI, Query, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
+from fastapi.responses import FileResponse, RedirectResponse
 from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import init_db
+from db import init_db, get_track_by_id
 from schemas import TrackRead
 from search_service import (
     SearchOrchestrator, 
     LocalSearchService, 
     RemoteSearchService
 )
+from providers import YoutubeStreamProvider
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -19,7 +21,6 @@ STATIC_DIR.mkdir(parents=True, exist_ok=True)
 
 # Dependency Injection setup
 def get_search_orchestrator() -> SearchOrchestrator:
-    # В реальном приложении YTMusic лучше инициализировать один раз при старте
     ytmusic = YTMusic() 
     local_svc = LocalSearchService()
     remote_svc = RemoteSearchService(ytmusic)
@@ -57,3 +58,37 @@ def search_tracks(
     Search tracks in local database and YouTube Music.
     """
     return orchestrator.search(q)
+
+@app.get("/stream/{track_id}")
+def stream_track(track_id: int):
+    """
+    Streams a track. 
+    If local: returns FileResponse.
+    If remote: resolves URL and returns RedirectResponse.
+    """
+    track = get_track_by_id(track_id)
+    
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    source = track.get("source")
+
+    if source == "local":
+        file_path = Path(track["path"])
+        if not file_path.exists():
+            raise HTTPException(status_code=404, detail="Audio file not found on disk")
+        return FileResponse(file_path)
+
+    if source == "remote":
+        external_id = track.get("external_id")
+        if not external_id:
+            raise HTTPException(status_code=500, detail="Remote track missing external_id")
+        
+        try:
+            provider = YoutubeStreamProvider(external_id)
+            stream_url = provider.get_stream_url()
+            return RedirectResponse(url=stream_url)
+        except Exception as e:
+            raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")
+
+    raise HTTPException(status_code=400, detail="Unsupported source")
