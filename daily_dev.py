@@ -187,7 +187,11 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.1,
-        "max_tokens": 8192,
+        "max_tokens": 16384,
+        "options": {
+            "num_ctx": 20480,
+            "num_predict": 16384,
+        },
     }
 
     log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
