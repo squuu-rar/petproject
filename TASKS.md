@@ -15,14 +15,14 @@
 
 - [x] api: GET /tracks with pagination, sorting and filter by source (local/remote)
 - [x] api: GET /search?q= querying both local database and remote discovery provider
-- [ ] api: unified GET /stream/{track_id} supporting both local files and remote streaming
-- [ ] api: support HTTP 206 Range headers for seamless audio seeking on streams
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [ ] cache: implement LRU disk cache manager for remote tracks (auto-evict oldest unliked files)
-- [ ] cache: background worker caching streamed chunks to local disk during playback
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 
 - [ ] frontend: HTML5 responsive player layout (sidebar, tracklist view, bottom player dock)
 - [ ] frontend: CSS styles with dark modern palette, smooth hover states and track cards
-- [ ] frontend: unified audio player engine supporting stream buffering, play, pause, seek
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [ ] frontend: volume slider with muted toggle and localStorage persistence
 - [ ] frontend: search bar with debounced requests to unified /search endpoint
 - [ ] frontend: display album artwork, track duration and elapsed time in player dock
@@ -41,14 +41,14 @@
 - [ ] api: GET /wave/next returning dynamic batch of 5 personalized tracks
 - [ ] frontend: "Моя Волна" master button with animated waveform pulse during playback
 - [ ] wave: mood / vibe filter modes (energy, focus, calm) based on tempo and acoustic presets
-- [ ] frontend: vibe chips selector (Бодрое, Спокойное, Открытия) directly modifying wave stream
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 
 - [ ] playlists: POST /playlists and GET /playlists supporting mixed local and remote tracks
 - [ ] playlists: POST /playlists/{id}/tracks and DELETE /playlists/{id}/tracks/{track_id}
 - [ ] frontend: playlist drawer in sidebar and modal to create new playlist
 - [ ] frontend: context menu on track cards (Добавить в плейлист, Скачать на диск)
 
-- [ ] transcode: auto-detect client bandwidth and transcode streams to Opus 128k via ffmpeg
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [ ] frontend: MediaSession API integration (OS lock screen controls, background playback, artwork)
 - [ ] frontend: keyboard shortcuts (Space - play/pause, Left/Right - seek 5s, L - like, N - next)
 - [ ] frontend: mobile adaptive view with swipeable bottom drawer player
@@ -58,7 +58,7 @@
 - [ ] auth: login modal dialog on frontend and guest mode fallback
 
 - [ ] tests: unit tests for LocalStorageProvider and RemoteDiscoveryProvider mocks
-- [ ] tests: integration tests for unified /stream Range requests
+- [ ] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [ ] tests: unit tests for WaveEngine candidate scoring and skip penalty rules
 - [ ] docker: Dockerfile with ffmpeg, Python environment and SQLite volume
 - [ ] docker: docker-compose.yml ready for single-command production deployment
