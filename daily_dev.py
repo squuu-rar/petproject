@@ -172,7 +172,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
 
     feedback_text = ""
     if error_feedback:
-        feedback_text = f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nПроанализируй ошибку и исправь её!\n"
+        feedback_text = f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nПроанализируй ошибку и исправь её! ВНИМАНИЕ: CoT строго до 3-4 строк, сразу выводи блоки === FILE: ... ===\n"
 
     user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 250 слов) и выведи файлы в формате === FILE: ... ==="
 
@@ -189,7 +189,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         "temperature": 0.1,
         "max_tokens": 16384,
         "options": {
-            "num_ctx": 20480,
+            "num_ctx": 32768,
             "num_predict": 16384,
         },
     }
