@@ -66,6 +66,12 @@ def search_tracks(
 ):
     return orchestrator.search(q)
 
+
+@app.post("/tracks/remote", response_model=TrackRead)
+def register_remote_track(track: TrackRead):
+    from db import save_remote_track
+    return save_remote_track(track.model_dump())
+
 @app.get("/stream/{track_id}")
 async def stream_track(track_id: int):
     track = get_track_by_id(track_id)

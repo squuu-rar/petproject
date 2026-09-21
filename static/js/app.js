@@ -61,7 +61,7 @@ document.addEventListener('DOMContentLoaded', () => {
             item.className = `track-item ${currentIndex === index ? 'active' : ''}`;
             item.dataset.index = index;
             
-            const cover = track.cover_path || '/static/img/default-cover.png';
+            const cover = track.cover_path || '/static/img/default-cover.svg';
             const duration = track.duration ? formatTime(track.duration) : '--:--';
 
             item.innerHTML = `
@@ -96,11 +96,33 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Player Logic ---
 
-    function playTrack(index) {
+    async function playTrack(index) {
         if (index < 0 || index >= currentTracks.length) return;
 
         currentIndex = index;
         const track = currentTracks[index];
+
+        // Если трек пришел из внешнего поиска без id, сохраняем его в SQLite
+        if (!track.id || track.id === -1 || track.id === '-1') {
+            try {
+                const res = await fetch('/tracks/remote', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(track)
+                });
+                if (res.ok) {
+                    const saved = await res.json();
+                    track.id = saved.id;
+                    const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
+                    if (activeEl) {
+                        const likeBtn = activeEl.querySelector('.like-btn');
+                        if (likeBtn) likeBtn.dataset.id = saved.id;
+                    }
+                }
+            } catch (err) {
+                console.error("Не удалось зарегистрировать remote трек:", err);
+            }
+        }
 
         // Update UI
         document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
@@ -109,14 +131,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
         playerTitle.textContent = track.title || 'Unknown Title';
         playerArtist.textContent = track.artist || 'Unknown Artist';
-        playerCover.src = track.cover_path || '/static/img/default-cover.png';
+        playerCover.src = track.cover_path || '/static/img/default-cover.svg';
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
 
         // Audio Source
-        // If remote, the backend returns a redirect to the stream URL
         const streamUrl = `/stream/${track.id}`;
         audioPlayer.src = streamUrl;
-        audioPlayer.play();
+        audioPlayer.play().catch(e => console.log("Play interrupted or loading:", e));
         btnPlay.querySelector('i').className = 'fas fa-pause-circle';
     }
 

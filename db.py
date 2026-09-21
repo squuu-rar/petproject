@@ -38,6 +38,7 @@ def init_db():
     columns = [col[1] for col in cur.fetchall()]
     migrations = [
         ("genre", "TEXT"),
+        ("year", "INTEGER"),
         ("cover_path", "TEXT"),
         ("source", "TEXT DEFAULT 'local'"),
         ("external_id", "TEXT"),
@@ -125,3 +126,52 @@ def get_tracks_paginated(
 
 if __name__ == "__main__":
     init_db()
+
+
+def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
+    """Saves or retrieves an existing remote track in the database."""
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        ext_id = track_data.get("external_id")
+        path = track_data.get("path")
+        
+        # Проверяем, сохранен ли уже этот трек
+        cur.execute(
+            "SELECT * FROM tracks WHERE (external_id IS NOT NULL AND external_id = ?) OR path = ?",
+            (ext_id, path)
+        )
+        row = cur.fetchone()
+        if row:
+            res = dict(row)
+            res["liked"] = bool(res.get("liked", 0))
+            return res
+
+        # Сохраняем новый remote трек
+        cur.execute("""
+            INSERT INTO tracks (
+                path, title, artist, album, genre, year,
+                track_number, duration, cover_path, source,
+                external_id, cache_path, liked, last_accessed
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'remote', ?, ?, 0, 0)
+        """, (
+            path,
+            track_data.get("title"),
+            track_data.get("artist"),
+            track_data.get("album"),
+            track_data.get("genre"),
+            track_data.get("year"),
+            track_data.get("track_number"),
+            track_data.get("duration"),
+            track_data.get("cover_path"),
+            ext_id,
+            track_data.get("cache_path")
+        ))
+        conn.commit()
+        new_id = cur.lastrowid
+        cur.execute("SELECT * FROM tracks WHERE id = ?", (new_id,))
+        res = dict(cur.fetchone())
+        res["liked"] = bool(res.get("liked", 0))
+        return res
+    finally:
+        conn.close()

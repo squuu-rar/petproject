@@ -8,7 +8,7 @@ class TrackRead(BaseModel):
     artist: Optional[str]
     album: Optional[str]
     genre: Optional[str]
-    year: Optional[int]
+    year: Optional[int] = None
     track_number: Optional[int]
     duration: Optional[float]
     cover_path: Optional[str]
