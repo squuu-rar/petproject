@@ -17,7 +17,7 @@
 - [x] api: GET /search?q= querying both local database and remote discovery provider
 - [x] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [x] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
-- [ ] cache: implement LRU disk cache manager for remote tracks (auto-evict oldest unliked files)
+- [x] cache: implement LRU disk cache manager for remote tracks (auto-evict oldest unliked files)
 - [x] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 
 - [ ] frontend: HTML5 responsive player layout (sidebar, tracklist view, bottom player dock)
