@@ -156,7 +156,11 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     system_prompt = (
         "Ты — ведущий Python-инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
         "РЕГЛАМЕНТ РАБОТЫ:\n"
-        "1. Рассуждения (CoT): составь структурированный план решения до 200–300 слов:\n"
+        "1. Рассуждения (CoT): пройди СТРОГО по 3 пунктам плана, без лирических отступлений:
+      - Схема БД и сигнатуры методов CacheManager.
+      - Логика LRU-вытеснения (условие для unliked и сортировка).
+      - Необходимые фикстуры и проверки для pytest.
+      Как только эти 3 пункта описаны — рассуждения ОКОНЧЕНЫ, сразу открывай блок === FILE: ... ===.
         "   - Сигнатуры классов и методов.\n"
         "   - Стратегия моков внешних библиотек (pytest, monkeypatch).\n"
         "   - Граничные случаи.\n"
@@ -188,7 +192,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.1,
+        "temperature": 0.3,
         "max_tokens": 16384,
         "options": {
             "num_ctx": 32768,
