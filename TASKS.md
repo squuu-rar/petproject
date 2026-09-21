@@ -20,7 +20,7 @@
 - [x] cache: implement LRU disk cache manager for remote tracks (auto-evict oldest unliked files)
 - [x] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 
-- [ ] frontend: HTML5 responsive player layout (sidebar, tracklist view, bottom player dock)
+- [x] frontend: HTML5 responsive player layout (sidebar, tracklist view, bottom player dock)
 - [ ] frontend: CSS styles with dark modern palette, smooth hover states and track cards
 - [x] api: implement GET /stream/{track_id} (int): look up track in DB; if source == 'local' return FileResponse(path); if source == 'remote' resolve direct URL via YoutubeStreamProvider(external_id) and return RedirectResponse(url); return 404 if not found
 - [ ] frontend: volume slider with muted toggle and localStorage persistence

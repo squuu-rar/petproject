@@ -1,0 +1,356 @@
+:root {
+    --bg-dark: #090909;
+    --bg-light: #121212;
+    --bg-accent: #282828;
+    --text-main: #ffffff;
+    --text-dim: #b3b3b3;
+    --primary: #1db954;
+    --primary-hover: #1ed760;
+    --sidebar-width: 260px;
+    --player-height: 90px;
+}
+
+* {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+}
+
+body {
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-dark);
+    color: var(--text-main);
+    overflow: hidden;
+}
+
+.app-container {
+    display: grid;
+    grid-template-columns: var(--sidebar-width) 1fr;
+    grid-template-rows: 1fr var(--player-height);
+    height: 100vh;
+    width: 100vw;
+}
+
+/* Sidebar */
+.sidebar {
+    background-color: #000;
+    padding: 1.5rem;
+    display: flex;
+    flex-direction: column;
+    gap: 2rem;
+}
+
+.logo {
+    font-size: 1.5rem;
+    font-weight: bold;
+    display: flex;
+    align-items: center;
+    gap: 0.75rem;
+    color: var(--primary);
+}
+
+.nav-menu {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.nav-item {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+    color: var(--text-dim);
+    text-decoration: none;
+    padding: 0.75rem 0;
+    font-weight: 500;
+    transition: color 0.2s;
+}
+
+.nav-item:hover, .nav-item.active {
+    color: var(--text-main);
+}
+
+.nav-item.active {
+    color: var(--primary);
+}
+
+/* Main Content */
+.main-content {
+    background: linear-gradient(to bottom, #1e1e1e, var(--bg-dark));
+    overflow-y: auto;
+    position: relative;
+}
+
+.top-bar {
+    padding: 1rem 2rem;
+    position: sticky;
+    top: 0;
+    background: rgba(18, 18, 18, 0.8);
+    backdrop-filter: blur(10px);
+    z-index: 10;
+}
+
+.search-container {
+    background: var(--bg-accent);
+    border-radius: 20px;
+    padding: 0.5rem 1rem;
+    display: flex;
+    align-items: center;
+    max-width: 400px;
+}
+
+.search-container i {
+    color: var(--text-dim);
+    margin-right: 0.5rem;
+}
+
+.search-container input {
+    background: none;
+    border: none;
+    color: white;
+    width: 100%;
+    outline: none;
+}
+
+.content-area {
+    padding: 2rem;
+}
+
+#view-title {
+    font-size: 2rem;
+    margin-bottom: 1.5rem;
+}
+
+/* Tracklist */
+.tracklist-container {
+    display: flex;
+    flex-direction: column;
+    gap: 0.5rem;
+}
+
+.track-item {
+    display: grid;
+    grid-template-columns: 50px 1fr 1fr 80px 40px;
+    align-items: center;
+    padding: 0.5rem 1rem;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.2s;
+}
+
+.track-item:hover {
+    background-color: rgba(255, 255, 255, 0.1);
+}
+
+.track-item.active {
+    background-color: rgba(29, 185, 84, 0.1);
+}
+
+.track-item .track-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.track-item img {
+    width: 40px;
+    height: 40px;
+    border-radius: 4px;
+    object-fit: cover;
+}
+
+.track-title-name {
+    font-weight: 500;
+    display: block;
+}
+
+.track-artist-name {
+    font-size: 0.85rem;
+    color: var(--text-dim);
+}
+
+.track-duration {
+    color: var(--text-dim);
+    font-size: 0.9rem;
+    text-align: right;
+}
+
+/* Player Dock */
+.player-dock {
+    grid-column: 1 / 3;
+    background-color: #181818;
+    border-top: 1px solid #282828;
+    display: grid;
+    grid-template-columns: 1fr 2fr 1fr;
+    align-items: center;
+    padding: 0 1rem;
+    z-index: 100;
+}
+
+.player-info {
+    display: flex;
+    align-items: center;
+    gap: 1rem;
+}
+
+.mini-cover {
+    width: 56px;
+    height: 56px;
+    border-radius: 4px;
+    object-fit: cover;
+}
+
+.track-details {
+    display: flex;
+    flex-direction: column;
+}
+
+.track-title {
+    font-size: 0.9rem;
+    font-weight: 500;
+}
+
+.track-artist {
+    font-size: 0.8rem;
+    color: var(--text-dim);
+}
+
+.player-controls {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 0.5rem;
+}
+
+.control-buttons {
+    display: flex;
+    align-items: center;
+    gap: 1.5rem;
+}
+
+.icon-btn {
+    background: none;
+    border: none;
+    color: var(--text-dim);
+    font-size: 1.2rem;
+    cursor: pointer;
+    transition: color 0.2s, transform 0.1s;
+}
+
+.icon-btn:hover {
+    color: var(--text-main);
+}
+
+.icon-btn:active {
+    transform: scale(0.9);
+}
+
+.play-btn {
+    font-size: 2.5rem;
+    color: var(--text-main);
+}
+
+.progress-container {
+    width: 100%;
+    max-width: 500px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    font-size: 0.75rem;
+    color: var(--text-dim);
+}
+
+.progress-bar {
+    flex-grow: 1;
+    height: 4px;
+    background: #4f4f4f;
+    border-radius: 2px;
+    position: relative;
+    cursor: pointer;
+}
+
+.progress-fill {
+    height: 100%;
+    background: var(--primary);
+    width: 0%;
+    border-radius: 2px;
+}
+
+.player-volume {
+    display: flex;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 0.5rem;
+}
+
+.volume-slider {
+    width: 100px;
+    height: 4px;
+    background: #4f4f4f;
+    border-radius: 2px;
+    position: relative;
+}
+
+.volume-fill {
+    height: 100%;
+    background: var(--primary);
+    width: 70%;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .app-container {
+        grid-template-columns: 1fr;
+        grid-template-rows: 1fr 60px 60px;
+    }
+
+    .sidebar {
+        display: none;
+    }
+
+    .nav-menu {
+        position: fixed;
+        bottom: 60px;
+        left: 0;
+        width: 100%;
+        flex-direction: row;
+        justify-content: space-around;
+        background: #000;
+        padding: 0;
+        z-index: 100;
+    }
+
+    .nav-item {
+        flex-direction: column;
+        font-size: 0.7rem;
+        gap: 4px;
+        padding: 0.5rem;
+    }
+
+    .nav-item i {
+        font-size: 1.2rem;
+    }
+
+    .player-dock {
+        grid-column: 1 / 2;
+        grid-row: 3;
+        grid-template-columns: 1fr 1fr 1fr;
+        padding: 0 0.5rem;
+    }
+
+    .player-info {
+        display: none; /* Hide info on mobile to save space */
+    }
+
+    .player-controls {
+        width: 100%;
+    }
+
+    .player-volume {
+        display: none;
+    }
+
+    .progress-container {
+        display: none; /* Hide progress on mobile to save space */
+    }
+}
