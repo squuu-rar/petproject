@@ -107,6 +107,7 @@ async def stream_track(track_id: int):
 
 @app.post("/tracks/{track_id}/like")
 def toggle_like(track_id: int, liked: bool = Query(...)):
+    from db import get_db
     import sqlite3
     conn = get_db()
     try:
