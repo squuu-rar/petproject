@@ -28,7 +28,9 @@ def init_db():
             cover_path TEXT,
             source TEXT DEFAULT 'local',
             external_id TEXT,
-            cache_path TEXT
+            cache_path TEXT,
+            liked INTEGER DEFAULT 0,
+            last_accessed REAL DEFAULT 0
         )
         """
     )
@@ -40,6 +42,8 @@ def init_db():
         ("source", "TEXT DEFAULT 'local'"),
         ("external_id", "TEXT"),
         ("cache_path", "TEXT"),
+        ("liked", "INTEGER DEFAULT 0"),
+        ("last_accessed", "REAL DEFAULT 0"),
     ]
     for col_name, col_type in migrations:
         if col_name not in columns:
@@ -56,6 +60,29 @@ def get_track_by_id(track_id: int) -> Optional[Dict[str, Any]]:
     finally:
         conn.close()
 
+def update_track_cache_info(track_id: int, cache_path: Optional[str], last_accessed: float):
+    """Updates cache path and last accessed timestamp."""
+    conn = get_db()
+    try:
+        conn.execute(
+            "UPDATE tracks SET cache_path = ?, last_accessed = ? WHERE id = ?",
+            (cache_path, last_accessed, track_id)
+        )
+        conn.commit()
+    finally:
+        conn.close()
+
+def get_oldest_unliked_cache_files(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """Returns list of unliked tracks with cache files, ordered by last_accessed."""
+    return cur.execute("""
+        SELECT id, cache_path FROM tracks 
+        WHERE source = 'remote' 
+          AND liked = 0 
+          AND cache_path IS NOT NULL 
+          AND last_accessed > 0
+        ORDER BY last_accessed ASC
+    """).fetchall()
+
 def get_tracks_paginated(
     limit: int,
     offset: int,
@@ -63,10 +90,6 @@ def get_tracks_paginated(
     order: str,
     source: Optional[str] = None
 ) -> List[Dict[str, Any]]:
-    """
-    Retrieves a paginated list of tracks with optional filtering and sorting.
-    """
-    # Whitelist for security to prevent SQL injection in ORDER BY clause
     allowed_columns = {
         "id", "title", "artist", "album", "genre", 
         "year", "track_number", "duration", "source"

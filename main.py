@@ -1,3 +1,4 @@
+import asyncio
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
@@ -14,10 +15,16 @@ from search_service import (
     RemoteSearchService
 )
 from providers import YoutubeStreamProvider
+from cache_manager import CacheManager
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
+CACHE_DIR = STATIC_DIR / "cache"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Global cache manager instance
+cache_manager: Optional[CacheManager] = None
 
 # Dependency Injection setup
 def get_search_orchestrator() -> SearchOrchestrator:
@@ -28,7 +35,10 @@ def get_search_orchestrator() -> SearchOrchestrator:
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global cache_manager
     init_db()
+    # 500MB limit for cache
+    cache_manager = CacheManager(CACHE_DIR, 500 * 1024 * 1024)
     yield
 
 app = FastAPI(title="Music Player API", lifespan=lifespan)
@@ -54,18 +64,10 @@ def search_tracks(
     q: str = Query(..., min_length=1, description="Search query"),
     orchestrator: SearchOrchestrator = Depends(get_search_orchestrator)
 ):
-    """
-    Search tracks in local database and YouTube Music.
-    """
     return orchestrator.search(q)
 
 @app.get("/stream/{track_id}")
-def stream_track(track_id: int):
-    """
-    Streams a track. 
-    If local: returns FileResponse.
-    If remote: resolves URL and returns RedirectResponse.
-    """
+async def stream_track(track_id: int):
     track = get_track_by_id(track_id)
     
     if not track:
@@ -83,12 +85,27 @@ def stream_track(track_id: int):
         external_id = track.get("external_id")
         if not external_id:
             raise HTTPException(status_code=500, detail="Remote track missing external_id")
-        
+
+        if track.get("cache_path"):
+            cached_path = Path(track["cache_path"])
+            if cached_path.exists():
+                return FileResponse(cached_path)
+
         try:
             provider = YoutubeStreamProvider(external_id)
             stream_url = provider.get_stream_url()
-            return RedirectResponse(url=stream_url)
+            return RedirectResponse(url=stream_url, status_code=307)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")
-
     raise HTTPException(status_code=400, detail="Unsupported source")
+
+@app.post("/tracks/{track_id}/like")
+def toggle_like(track_id: int, liked: bool = Query(...)):
+    import sqlite3
+    conn = get_db()
+    try:
+        conn.execute("UPDATE tracks SET liked = ? WHERE id = ?", (1 if liked else 0, track_id))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()

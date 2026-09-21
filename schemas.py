@@ -15,3 +15,5 @@ class TrackRead(BaseModel):
     source: str
     external_id: Optional[str]
     cache_path: Optional[str]
+    liked: Optional[bool] = False
+    last_accessed: Optional[float] = None
