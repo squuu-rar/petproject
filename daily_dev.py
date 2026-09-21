@@ -24,6 +24,12 @@ MAX_ATTEMPTS = 3
 IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "daily_dev_2.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
+# Ограничение контекста репозитория. Без этого get_repo_context() рано или
+# поздно (когда файлов станет много) съест весь num_ctx ещё до того, как
+# модель начнёт писать код — и finish_reason=length будет происходить уже
+# без всякого reasoning-loop, просто от объёма исходников.
+MAX_FILE_CONTEXT_CHARS = 6000
+
 def log(msg: str):
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
     print(line)
@@ -63,11 +69,17 @@ def mark_task_done(index):
 
 def get_repo_context():
     context = []
+    total_chars = 0
     for p in sorted(REPO_DIR.rglob("*.py")):
         rel = p.relative_to(REPO_DIR)
         if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
-        context.append(f"--- Файл: {rel} ---\n{p.read_text(encoding='utf-8')}")
+        text = p.read_text(encoding="utf-8")
+        if len(text) > MAX_FILE_CONTEXT_CHARS:
+            text = text[:MAX_FILE_CONTEXT_CHARS] + f"\n# ... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
+        total_chars += len(text)
+        context.append(f"--- Файл: {rel} ---\n{text}")
+    log(f"Контекст репозитория: {len(context)} файлов, {total_chars} символов")
     return "\n\n".join(context)
 
 def sanitize_code(code: str) -> str:
@@ -156,13 +168,18 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     system_prompt = (
         "Ты — ведущий Python-инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
         "РЕГЛАМЕНТ РАБОТЫ:\n"
-        "1. Рассуждения (CoT): СТРОГО КРАТКО (до 100-150 слов). Зафиксируй схему БД, сигнатуры CacheManager и СРАЗУ переходи к блокам кода.\n"
+        "1. Рассуждения (CoT): СТРОГО КРАТКО (до 50-100 слов). Зафиксируй ключевые сущности и СРАЗУ переходи к блокам кода.\n"
         "2. Вывод кода: закончив план, СРАЗУ переходи к коду в блоках:\n\n"
         "=== FILE: путь/к/файлу.py ===\n"
         "# полный рабочий код файла без сокращений\n"
         "=== END FILE ===\n\n"
         "Требования:\n"
         "- МИНИМАЛЬНЫЙ ДИФФ: выводи блоки === FILE: ... === ТОЛЬКО для файлов, которые ты создаешь или модифицируешь по текущей задаче. ЗАПРЕЩЕНО трогать или выводить scanner.py, search_service.py и существующие тесты.\n"
+        "- НЕ МЕНЯЙ КОНТРАКТ: запрещено менять существующие HTTP-статусы, коды ответов, сигнатуры "
+        "уже работающих эндпоинтов и их поведение, если это явно не требуется текущей задачей. "
+        "Если нужно расширить поведение — делай это как дополнительный слой поверх старого "
+        "контракта, а не заменой (например: не найдено в кэше -> старое поведение остаётся "
+        "рабочим, кэш добавляется сверху, а не вместо).\n"
         "- В SQL-запросах для пустых значений используй исключительно NULL, а не Python None.\n"
         "- Явные импорты в начале каждого файла.\n" 
         "- Никаких заглушек pass или ... Только готовая реализация.\n"
@@ -171,7 +188,14 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
 
     feedback_text = ""
     if error_feedback:
-        feedback_text = f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\nПроанализируй ошибку и исправь её! ВНИМАНИЕ: CoT строго до 3-4 строк, сразу выводи блоки === FILE: ... ===\n"
+        feedback_text = (
+            f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\n"
+            "ВНИМАНИЕ: тесты упали — значит архитектура в целом верна, чинить нужно точечно. "
+            "Твой план должен состоять МАКСИМУМ из 2 предложений. Запрещено рассуждать об "
+            "устройстве FastAPI/lifespan/mock и прочей архитектуре — сразу пиши блоки "
+            "исправленных файлов. Запрещено менять статус-коды и поведение существующих "
+            "эндпоинтов, если это не требуется для исправления именно этой ошибки.\n"
+        )
 
     user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 250 слов) и выведи файлы в формате === FILE: ... ==="
 
@@ -225,14 +249,17 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         for r_line in reasoning.strip().splitlines()[:15]:
             log(f"CoT: {r_line}")
 
-    parts = []
-    if content.strip():
-        parts.append(content.strip())
-    if reasoning.strip():
-        parts.append(reasoning.strip())
+    # Reasoning-loop: модель сожгла бюджет генерации на размышления и не
+    # успела вывести ни одного блока с кодом. Раньше сюда подставлялся сырой
+    # текст reasoning в качестве "ответа" — apply_files_from_response всё
+    # равно не находил в нём === FILE: === и падал с малопонятной ошибкой
+    # "структура файлов не найдена". Теперь считаем это явным пустым ответом,
+    # чтобы main() сразу дал модели жёсткий запрет на рассуждения на retry.
+    if not content.strip() and len(reasoning) > 2000:
+        log("Похоже на reasoning-loop: контент пуст, весь бюджет ушёл на CoT.")
+        return ""
 
-    combined_output = "\n\n".join(parts).strip()
-    return combined_output
+    return content.strip()
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
@@ -255,8 +282,12 @@ def main():
         fmt_warning = ""
 
         if not result_text:
-            log("Модель вернула пустой ответ.")
-            fmt_warning = "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ! Сократи рассуждения и обязательно выведи файлы в блоках === FILE: путь ==="
+            log("Модель вернула пустой ответ (или сожгла бюджет на reasoning).")
+            fmt_warning = (
+                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ — весь бюджет токенов ушёл на рассуждения, а не на "
+                "код. НЕ АНАЛИЗИРУЙ архитектуру заново, она не изменилась. План — максимум 2 "
+                "предложения, сразу выводи блоки === FILE: путь ==="
+            )
             continue
 
         applied, parse_err = apply_files_from_response(result_text)

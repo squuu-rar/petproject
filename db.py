@@ -73,15 +73,22 @@ def update_track_cache_info(track_id: int, cache_path: Optional[str], last_acces
         conn.close()
 
 def get_oldest_unliked_cache_files(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Returns list of unliked tracks with cache files, ordered by last_accessed."""
-    return cur.execute("""
+    """Returns list of unliked tracks with cache files, ordered by last_accessed.
+
+    Принимает уже открытый conn (используется в фоновой очистке кэша),
+    поэтому явно выставляем row_factory, чтобы dict(row) точно работал,
+    даже если caller открыл соединение без него.
+    """
+    conn.row_factory = sqlite3.Row
+    cur = conn.execute("""
         SELECT id, cache_path FROM tracks 
         WHERE source = 'remote' 
           AND liked = 0 
           AND cache_path IS NOT NULL 
           AND last_accessed > 0
         ORDER BY last_accessed ASC
-    """).fetchall()
+    """)
+    return [dict(row) for row in cur.fetchall()]
 
 def get_tracks_paginated(
     limit: int,
