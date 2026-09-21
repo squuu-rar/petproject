@@ -190,10 +190,10 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "user", "content": user_prompt},
         ],
         "temperature": 0.3,
-        "max_tokens": 16384,
+        "max_tokens": 24576,
         "options": {
             "num_ctx": 32768,
-            "num_predict": 16384,
+            "num_predict": 24576,
         },
     }
 
