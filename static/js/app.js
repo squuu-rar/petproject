@@ -97,6 +97,11 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Player Logic ---
 
     async function playTrack(index) {
+        const _audio = document.querySelector('audio');
+        if (currentIndex === index && _audio) {
+            if (_audio.paused) { _audio.play(); } else { _audio.pause(); }
+            return;
+        }
         if (index < 0 || index >= currentTracks.length) return;
 
         currentIndex = index;
@@ -279,3 +284,37 @@ document.addEventListener('DOMContentLoaded', () => {
 
     init();
 });
+
+
+// playing-state-sync: синхронизация класса .playing и иконок
+function setupPlayingSync() {
+    const audioEl = document.querySelector('audio');
+    if (!audioEl) return;
+
+    audioEl.addEventListener('play', () => {
+        document.querySelectorAll('.track-item').forEach(el => el.classList.remove('playing'));
+        const active = document.querySelector('.track-item.active');
+        if (active) active.classList.add('playing');
+
+        const playBtnIcon = document.querySelector('#play-btn i, .play-btn i');
+        if (playBtnIcon) {
+            playBtnIcon.classList.remove('fa-play');
+            playBtnIcon.classList.add('fa-pause');
+        }
+    });
+
+    audioEl.addEventListener('pause', () => {
+        document.querySelectorAll('.track-item.playing').forEach(el => el.classList.remove('playing'));
+        const playBtnIcon = document.querySelector('#play-btn i, .play-btn i');
+        if (playBtnIcon) {
+            playBtnIcon.classList.remove('fa-pause');
+            playBtnIcon.classList.add('fa-play');
+        }
+    });
+}
+
+if (document.readyState === 'loading') {
+    document.addEventListener('DOMContentLoaded', setupPlayingSync);
+} else {
+    setupPlayingSync();
+}

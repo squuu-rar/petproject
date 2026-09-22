@@ -74,3 +74,6 @@
 - [ ] docker: Dockerfile (python:3.12-slim base, ffmpeg via apt, copies the app, runs uvicorn) with tracks.db and the cache dir declared as VOLUMEs
 - [ ] docker: docker-compose.yml wiring the app service, persistent volumes for tracks.db and cache/, and env vars for the library path
 - [ ] docs: README.md with an architecture diagram (providers/cache/wave/api/frontend overview), setup/quickstart instructions and 2-3 screenshots
+- [ ] frontend: fix track-item layout grid and spacing between duration and like button
+- [ ] backend: save remote track duration on search and registration so it shows immediately
+- [ ] backend: stream and cache remote audio files locally to disk for instant replay

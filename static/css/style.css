@@ -140,30 +140,38 @@ body {
     border-left: 4px solid transparent;
 }
 
-/* Hover Overlay Effect */
-.track-item::after {
-    content: '\f04b'; /* FontAwesome Play Icon */
-    font-family: "Font Awesome 6 Free";
-    font-weight: 900;
-    position: absolute;
-    top: 50%;
-    left: 50%;
-    transform: translate(-50%, -50%) scale(0.8);
-    font-size: 1.5rem;
-    color: var(--accent);
-    opacity: 0;
-    transition: all 0.2s ease;
-    pointer-events: none;
-    z-index: 1;
+/* Spotify-style Play icon instead of track rank on hover */
+.track-rank {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    min-width: 24px;
+    color: var(--text-muted);
 }
 
 .track-item:hover {
     background-color: var(--bg-surface);
 }
 
-.track-item:hover::after {
-    opacity: 0.4;
-    transform: translate(-50%, -50%) scale(1);
+.track-item:hover .track-rank {
+    font-size: 0;
+}
+
+/* Иконка паузы при наведении на играющий трек */
+.track-item.playing:hover .track-rank::after {
+    content: '\f04c';
+}
+
+.track-item:hover .track-rank::after {
+    content: '\f04b';
+    font-family: "Font Awesome 6 Free";
+    font-weight: 900;
+    font-size: 0.85rem;
+    color: var(--accent);
+}
+
+.track-item.active .track-rank {
+    color: var(--accent);
 }
 
 .track-item.active {
