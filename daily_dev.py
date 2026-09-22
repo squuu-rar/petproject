@@ -1,7 +1,9 @@
 #!/usr/bin/env python3
 import ast
+import json
 import os
 import re
+import shutil
 import subprocess
 import sys
 from datetime import datetime
@@ -21,14 +23,36 @@ CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest").strip()
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
 MAX_ATTEMPTS = 3
-IGNORED_SYSTEM_FILES = {"TASKS.md", "daily_dev.log", "daily_dev.py", "daily_dev_2.py", "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"}
+IGNORED_SYSTEM_FILES = {
+    "TASKS.md", "daily_dev.log", "daily_dev.py", "daily_dev_2.py",
+    "TODO_FAILING.md", "test_probe.txt", "CHECKLIST.md"
+}
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
-# Ограничение контекста репозитория. Без этого get_repo_context() рано или
-# поздно (когда файлов станет много) съест весь num_ctx ещё до того, как
-# модель начнёт писать код — и finish_reason=length будет происходить уже
-# без всякого reasoning-loop, просто от объёма исходников.
-MAX_FILE_CONTEXT_CHARS = 6000
+# Лимиты контекста для модели
+MAX_FILE_CONTEXT_CHARS = 16000
+MAX_TOTAL_CONTEXT_CHARS = 45000
+
+# Отслеживаемые типы файлов для фронтенда и бэкенда
+CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
+
+# Защита от потери объёма при полной перезаписи
+SHRINK_GUARD_RATIO = 0.6
+MIN_OLD_LEN_FOR_SHRINK_CHECK = 250
+
+# Маркеры, указывающие на ленивую генерацию с пропуском исходного кода
+LAZY_PATTERNS = [
+    "... (обрезано",
+    "// rest of code",
+    "/* rest of code",
+    "# rest of code",
+    "// existing code",
+    "/* existing code",
+    "# existing code",
+    "# ... existing code ...",
+    "// ... keep existing",
+    "/* keep existing",
+]
 
 def log(msg: str):
     line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
@@ -68,19 +92,39 @@ def mark_task_done(index):
     TASKS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def get_repo_context():
-    context = []
-    total_chars = 0
-    for p in sorted(REPO_DIR.rglob("*.py")):
+    all_files = set()
+    for pattern in CONTEXT_GLOBS:
+        all_files.update(REPO_DIR.rglob(pattern))
+
+    candidates = []
+    for p in all_files:
         rel = p.relative_to(REPO_DIR)
         if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
-        text = p.read_text(encoding="utf-8")
+        candidates.append(p)
+
+    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+
+    included = []
+    skipped = []
+    total_chars = 0
+    for p in candidates:
+        rel = p.relative_to(REPO_DIR)
+        text = p.read_text(encoding="utf-8", errors="ignore")
         if len(text) > MAX_FILE_CONTEXT_CHARS:
-            text = text[:MAX_FILE_CONTEXT_CHARS] + f"\n# ... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
+            text = text[:MAX_FILE_CONTEXT_CHARS] + f"\n... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
+        if total_chars + len(text) > MAX_TOTAL_CONTEXT_CHARS:
+            skipped.append(str(rel))
+            continue
         total_chars += len(text)
-        context.append(f"--- Файл: {rel} ---\n{text}")
-    log(f"Контекст репозитория: {len(context)} файлов, {total_chars} символов")
-    return "\n\n".join(context)
+        included.append((rel, text))
+
+    if skipped:
+        log(f"В контекст НЕ попали (исчерпан общий бюджет): {', '.join(skipped)}")
+    log(f"Контекст репозитория: {len(included)} файлов, {total_chars} симв. (бюджет {MAX_TOTAL_CONTEXT_CHARS})")
+
+    included.sort(key=lambda pair: str(pair[0]))
+    return "\n\n".join(f"--- Файл: {rel} ---\n{text}" for rel, text in included)
 
 def sanitize_code(code: str) -> str:
     lines = code.strip().splitlines()
@@ -90,27 +134,31 @@ def sanitize_code(code: str) -> str:
         lines = lines[:-1]
     return "\n".join(lines).strip()
 
-def write_target_file(rel_path: str, code: str):
-    clean_path = rel_path.strip("`* \t\r\n").lstrip("/\\")
-    target_file = (REPO_DIR / clean_path).resolve()
-    try:
-        target_file.relative_to(REPO_DIR)
-    except ValueError:
-        log(f"Защита пути: отклонена запись вне репозитория ({rel_path})")
-        return False
+def validate_code_syntax(rel_path: str, code: str) -> tuple[bool, str | None]:
+    code_lower = code.lower()
+    for pattern in LAZY_PATTERNS:
+        if pattern in code_lower:
+            return False, f"Обнаружен плейсхолдер пропуска кода ({pattern}). Выведи файл полностью без сокращений!"
 
-    clean_content = sanitize_code(code)
-    if clean_path.endswith(".py"):
+    if rel_path.endswith(".py"):
         try:
-            ast.parse(clean_content)
+            ast.parse(code)
         except SyntaxError as e:
-            log(f"Синтаксическая ошибка AST в коде для {clean_path}: {e}")
-            return False
+            return False, f"Синтаксическая ошибка AST Python в {rel_path} на строке {e.lineno}: {e.msg}"
 
-    target_file.parent.mkdir(parents=True, exist_ok=True)
-    target_file.write_text(clean_content + "\n", encoding="utf-8")
-    log(f"Обновлен файл: {clean_path}")
-    return True
+    if rel_path.endswith(".js") and shutil.which("node"):
+        res = subprocess.run(["node", "--check", "-"], input=code, text=True, capture_output=True)
+        if res.returncode != 0:
+            err_line = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "Syntax error"
+            return False, f"Синтаксическая ошибка JavaScript в {rel_path}: {err_line}"
+
+    if rel_path.endswith(".json"):
+        try:
+            json.loads(code)
+        except Exception as e:
+            return False, f"Ошибка синтаксиса JSON в {rel_path}: {e}"
+
+    return True, None
 
 def apply_files_from_response(content: str):
     if not content or not isinstance(content, str):
@@ -118,25 +166,38 @@ def apply_files_from_response(content: str):
 
     matches = list(re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL))
     if not matches:
-        matches = list(re.finditer(r"```(?:python:)?([a-zA-Z0-9_\-\./]+\.py)\r?\n(.*?)```", content, re.DOTALL))
+        matches = list(re.finditer(r"```(?:[a-zA-Z0-9_\-]+:)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9]+)\r?\n(.*?)```", content, re.DOTALL))
 
     if not matches:
         return False, "Блоки файлов === FILE: ... === не найдены в ответе"
 
-    # Валидация всей пачки перед записью (транзакционность)
     staged = []
     for m in matches:
         rel_path = m.group(1).strip("`* \t\r\n").lstrip("/\\")
         file_code = sanitize_code(m.group(2))
-        if rel_path.endswith(".py"):
-            try:
-                ast.parse(file_code)
-            except SyntaxError as e:
-                return False, f"Синтаксическая ошибка AST в {rel_path} на строке {e.lineno}: {e.msg}"
-        staged.append((rel_path, file_code))
 
-    for rel_path, file_code in staged:
         target = (REPO_DIR / rel_path).resolve()
+        try:
+            target.relative_to(REPO_DIR)
+        except ValueError:
+            return False, f"Защита пути: путь вне репозитория отклонён ({rel_path})"
+
+        valid, err = validate_code_syntax(rel_path, file_code)
+        if not valid:
+            return False, err
+
+        if target.exists():
+            old_len = len(target.read_text(encoding="utf-8", errors="ignore"))
+            new_len = len(file_code)
+            if old_len > MIN_OLD_LEN_FOR_SHRINK_CHECK and new_len < old_len * SHRINK_GUARD_RATIO:
+                return False, (
+                    f"Подозрительная потеря объёма в {rel_path}: было {old_len} симв., "
+                    f"стало {new_len}. Файл выведен не полностью — выведи весь файл целиком."
+                )
+
+        staged.append((target, rel_path, file_code))
+
+    for target, rel_path, file_code in staged:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(file_code + "\n", encoding="utf-8")
         log(f"Обновлен файл: {rel_path}")
@@ -166,38 +227,35 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     repo_files = get_repo_context()
 
     system_prompt = (
-        "Ты — ведущий Python-инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
+        "Ты — ведущий full-stack инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
         "РЕГЛАМЕНТ РАБОТЫ:\n"
-        "1. Рассуждения (CoT): СТРОГО КРАТКО (до 50-100 слов). Зафиксируй ключевые сущности и СРАЗУ переходи к блокам кода.\n"
+        "1. Рассуждения (CoT): СТРОГО КРАТКО (до 50-100 слов). Зафиксируй ключевые сущности и СРАЗУ переходи к коду.\n"
         "2. Вывод кода: закончив план, СРАЗУ переходи к коду в блоках:\n\n"
-        "=== FILE: путь/к/файлу.py ===\n"
-        "# полный рабочий код файла без сокращений\n"
+        "=== FILE: путь/к/файлу ===\n"
+        "# полный рабочий код файла без сокращений и пропусков\n"
         "=== END FILE ===\n\n"
         "Требования:\n"
-        "- МИНИМАЛЬНЫЙ ДИФФ: выводи блоки === FILE: ... === ТОЛЬКО для файлов, которые ты создаешь или модифицируешь по текущей задаче. ЗАПРЕЩЕНО трогать или выводить scanner.py, search_service.py и существующие тесты.\n"
-        "- НЕ МЕНЯЙ КОНТРАКТ: запрещено менять существующие HTTP-статусы, коды ответов, сигнатуры "
-        "уже работающих эндпоинтов и их поведение, если это явно не требуется текущей задачей. "
-        "Если нужно расширить поведение — делай это как дополнительный слой поверх старого "
-        "контракта, а не заменой (например: не найдено в кэше -> старое поведение остаётся "
-        "рабочим, кэш добавляется сверху, а не вместо).\n"
+        "- МИНИМАЛЬНЫЙ ДИФФ: выводи блоки === FILE: ... === ТОЛЬКО для файлов, которые ты создаешь или модифицируешь.\n"
+        "- ПОЛНАЯ ПЕРЕЗАПИСЬ ФАЙЛА: каждый блок заменяет файл на диске целиком. "
+        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать комментарии в духе '/* rest of code */' или '// ... existing code'. "
+        "Пропущенная строка — это стёртая строка.\n"
+        "- НЕ МЕНЯЙ КОНТРАКТ: запрещено ломать существующие HTTP-статусы, пути роутов, структуру элементов DOM и ID, "
+        "если этого явно не требует задача.\n"
         "- В SQL-запросах для пустых значений используй исключительно NULL, а не Python None.\n"
-        "- Явные импорты в начале каждого файла.\n" 
+        "- Явные импорты в начале каждого файла.\n"
         "- Никаких заглушек pass или ... Только готовая реализация.\n"
-        "- Полноценные pytest-тесты."
+        "- Полноценные тесты."
     )
 
     feedback_text = ""
     if error_feedback:
         feedback_text = (
-            f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ В ТЕСТАХ:\n{error_feedback}\n"
-            "ВНИМАНИЕ: тесты упали — значит архитектура в целом верна, чинить нужно точечно. "
-            "Твой план должен состоять МАКСИМУМ из 2 предложений. Запрещено рассуждать об "
-            "устройстве FastAPI/lifespan/mock и прочей архитектуре — сразу пиши блоки "
-            "исправленных файлов. Запрещено менять статус-коды и поведение существующих "
-            "эндпоинтов, если это не требуется для исправления именно этой ошибки.\n"
+            f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ:\n{error_feedback}\n"
+            "ВНИМАНИЕ: исправь точечно указанную проблему. План — максимум 2 предложения, "
+            "сразу выводи блоки исправленных файлов целиком.\n"
         )
 
-    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 250 слов) и выведи файлы в формате === FILE: ... ==="
+    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 200 слов) и выведи файлы в формате === FILE: ... ==="
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
@@ -249,12 +307,6 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         for r_line in reasoning.strip().splitlines()[:15]:
             log(f"CoT: {r_line}")
 
-    # Reasoning-loop: модель сожгла бюджет генерации на размышления и не
-    # успела вывести ни одного блока с кодом. Раньше сюда подставлялся сырой
-    # текст reasoning в качестве "ответа" — apply_files_from_response всё
-    # равно не находил в нём === FILE: === и падал с малопонятной ошибкой
-    # "структура файлов не найдена". Теперь считаем это явным пустым ответом,
-    # чтобы main() сразу дал модели жёсткий запрет на рассуждения на retry.
     if not content.strip() and len(reasoning) > 2000:
         log("Похоже на reasoning-loop: контент пуст, весь бюджет ушёл на CoT.")
         return ""
@@ -284,16 +336,15 @@ def main():
         if not result_text:
             log("Модель вернула пустой ответ (или сожгла бюджет на reasoning).")
             fmt_warning = (
-                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ — весь бюджет токенов ушёл на рассуждения, а не на "
-                "код. НЕ АНАЛИЗИРУЙ архитектуру заново, она не изменилась. План — максимум 2 "
-                "предложения, сразу выводи блоки === FILE: путь ==="
+                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ — бюджет токенов ушёл на рассуждения. "
+                "План — максимум 2 предложения, сразу выводи полные блоки === FILE: путь ==="
             )
             continue
 
         applied, parse_err = apply_files_from_response(result_text)
         if not applied:
-            log("Не удалось извлечь файлы из ответа.")
-            fmt_warning = f"ОШИБКА В СТРУКТУРЕ ФАЙЛОВ: {parse_err}. Исправь синтаксис!"
+            log(f"Не удалось применить изменения: {parse_err}")
+            fmt_warning = f"ОШИБКА ПРИ ПРИМЕНЕНИИ ФАЙЛОВ: {parse_err}. Исправь ошибку и выведи файлы заново!"
             continue
 
         ok, test_out = run_tests()
