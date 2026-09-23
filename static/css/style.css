@@ -395,3 +395,8 @@ body {
         display: none;
     }
 }
+
+.track-item.active {
+    background-color: rgba(29, 185, 84, 0.1);
+    border-left: 3px solid var(--accent);
+}
