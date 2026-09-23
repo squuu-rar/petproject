@@ -1,4 +1,6 @@
 #!/usr/bin/env python3
+NUM_CTX = 65536
+MAX_PREDICT = 49152
 import ast
 import json
 import os
@@ -30,8 +32,8 @@ IGNORED_SYSTEM_FILES = {
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
 # Лимиты контекста для модели
-MAX_FILE_CONTEXT_CHARS = 16000
-MAX_TOTAL_CONTEXT_CHARS = 45000
+MAX_FILE_CONTEXT_CHARS = 35000
+MAX_TOTAL_CONTEXT_CHARS = 130000
 
 # Отслеживаемые типы файлов для фронтенда и бэкенда
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
@@ -270,8 +272,8 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         "temperature": 0.3,
         "max_tokens": 24576,
         "options": {
-            "num_ctx": 32768,
-            "num_predict": 24576,
+            "num_ctx": 65536,
+            "num_predict": 49152,
         },
     }
 

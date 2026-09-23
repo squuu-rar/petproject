@@ -42,6 +42,10 @@ async def lifespan(app: FastAPI):
     yield
 
 app = FastAPI(title="Music Player API", lifespan=lifespan)
+@app.get("/")
+def serve_index():
+    return FileResponse("static/index.html")
+
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/health")
@@ -53,8 +57,8 @@ def list_tracks(
     limit: int = Query(20, ge=1, le=100),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
-    order: str = Query("asc", regex="^(asc|desc)$"),
-    source: Optional[str] = Query(None, regex="^(local|remote)$")
+    order: str = Query("asc", pattern="^(asc|desc)$"),
+    source: Optional[str] = Query(None, pattern="^(local|remote)$")
 ):
     from db import get_tracks_paginated
     return get_tracks_paginated(limit, offset, sort_by, order, source)

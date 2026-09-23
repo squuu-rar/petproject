@@ -172,11 +172,6 @@ body {
     color: var(--accent);
 }
 
-.track-item.active {
-    background-color: rgba(29, 185, 84, 0.1);
-    border-left-color: var(--accent);
-}
-
 .track-item > div {
     position: relative;
     z-index: 2;
@@ -209,6 +204,23 @@ body {
     color: var(--text-muted);
     font-size: 0.9rem;
     text-align: right;
+}
+
+/* Search States */
+.status-message {
+    padding: 3rem;
+    text-align: center;
+    color: var(--text-muted);
+    font-size: 1.2rem;
+}
+
+.source-group-title {
+    padding: 0.75rem 1rem;
+    font-size: 0.8rem;
+    text-transform: uppercase;
+    letter-spacing: 1.5px;
+    color: var(--accent);
+    font-weight: 700;
 }
 
 /* Player Dock */

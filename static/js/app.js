@@ -27,6 +27,27 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentIndex = -1;
     let currentView = 'library';
 
+    // --- Utilities ---
+
+    function debounce(func, wait) {
+        let timeout;
+        return function executedFunction(...args) {
+            const later = () => {
+                clearTimeout(timeout);
+                func(...args);
+            };
+            clearTimeout(timeout);
+            timeout = setTimeout(later, wait);
+        };
+    }
+
+    function formatTime(seconds) {
+        if (!seconds) return '--:--';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
     // --- API Methods ---
 
     async function fetchTracks(params = {}) {
@@ -51,49 +72,72 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- UI Rendering ---
 
+    function renderTrackItem(track, index) {
+        const item = document.createElement('div');
+        item.className = `track-item ${currentIndex === index ? 'active' : ''}`;
+        item.dataset.index = index;
+        
+        const cover = track.cover_path || '/static/img/default-cover.svg';
+        const duration = track.duration ? formatTime(track.duration) : '--:--';
+
+        item.innerHTML = `
+            <div class="track-rank">${index + 1}</div>
+            <div class="track-info">
+                <img src="${cover}" alt="cover">
+                <div class="track-text">
+                    <span class="track-title-name">${track.title || 'Unknown Title'}</span>
+                    <span class="track-artist-name">${track.artist || 'Unknown Artist'}</span>
+                </div>
+            </div>
+            <div class="track-album">${track.album || '-'}</div>
+            <div class="track-duration">${duration}</div>
+            <div class="track-actions">
+                <button class="icon-btn like-btn" data-id="${track.id}" data-liked="${track.liked}">
+                    <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
+                </button>
+            </div>
+        `;
+
+        item.addEventListener('click', () => playTrack(index));
+        return item;
+    }
+
     function renderTracklist(tracks) {
         tracklist.innerHTML = '';
         if (tracks.length === 0) {
-            tracklist.innerHTML = '<div class="empty-state">No tracks found</div>';
+            tracklist.innerHTML = '<div class="status-message">No tracks found</div>';
             return;
         }
 
         tracks.forEach((track, index) => {
-            const item = document.createElement('div');
-            item.className = `track-item ${currentIndex === index ? 'active' : ''}`;
-            item.dataset.index = index;
-            
-            const cover = track.cover_path || '/static/img/default-cover.svg';
-            const duration = track.duration ? formatTime(track.duration) : '--:--';
-
-            item.innerHTML = `
-                <div class="track-rank">${index + 1}</div>
-                <div class="track-info">
-                    <img src="${cover}" alt="cover">
-                    <div class="track-text">
-                        <span class="track-title-name">${track.title || 'Unknown Title'}</span>
-                        <span class="track-artist-name">${track.artist || 'Unknown Artist'}</span>
-                    </div>
-                </div>
-                <div class="track-album">${track.album || '-'}</div>
-                <div class="track-duration">${duration}</div>
-                <div class="track-actions">
-                    <button class="icon-btn like-btn" data-id="${track.id}" data-liked="${track.liked}">
-                        <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
-                    </button>
-                </div>
-            `;
-
-            item.addEventListener('click', () => playTrack(index));
-            tracklist.appendChild(item);
+            tracklist.appendChild(renderTrackItem(track, index));
         });
     }
 
-    function formatTime(seconds) {
-        if (!seconds) return '--:--';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    function renderSearchResults(results) {
+        tracklist.innerHTML = '';
+        if (results.length === 0) {
+            tracklist.innerHTML = '<div class="status-message">Ничего не найдено</div>';
+            return;
+        }
+
+        const groups = results.reduce((acc, track, idx) => {
+            const label = track.source === 'local' ? 'Локально' : 'Найдено';
+            if (!acc[label]) acc[label] = [];
+            acc[label].push({ track, idx });
+            return acc;
+        }, {});
+
+        for (const [label, items] of Object.entries(groups)) {
+            const header = document.createElement('div');
+            header.className = 'source-group-title';
+            header.textContent = label;
+            tracklist.appendChild(header);
+
+            items.forEach(({ track, idx }) => {
+                tracklist.appendChild(renderTrackItem(track, idx));
+            });
+        }
     }
 
     // --- Player Logic ---
@@ -198,16 +242,32 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Event Listeners ---
 
-    searchInput.addEventListener('keydown', async (e) => {
-        if (e.key === 'Enter') {
-            const query = e.target.value.trim();
-            if (query) {
-                viewTitle.textContent = `Results for "${query}"`;
-                const results = await searchTracks(query);
-                currentTracks = results;
-                renderTracklist(currentTracks);
-            }
+    const handleSearch = debounce(async (query) => {
+        if (!query) {
+            viewTitle.textContent = "Your Library";
+            currentView = 'library';
+            fetchTracks().then(tracks => {
+                currentTracks = tracks;
+                renderTracklist(tracks);
+            });
+            return;
         }
+
+        viewTitle.textContent = `Results for "${query}"`;
+        tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
+        
+        try {
+            const results = await searchTracks(query);
+            currentTracks = results;
+            renderSearchResults(results);
+        } catch (err) {
+            console.error(err);
+            tracklist.innerHTML = '<div class="status-message">Search error occurred</div>';
+        }
+    }, 300);
+
+    searchInput.addEventListener('input', (e) => {
+        handleSearch(e.target.value.trim());
     });
 
     document.querySelectorAll('.nav-item').forEach(item => {
@@ -280,7 +340,7 @@ document.addEventListener('DOMContentLoaded', () => {
     volumeRange.addEventListener('input', () => {
         audioPlayer.volume = volumeRange.value / 100;
         audioPlayer.muted = false;
-        updateMuteIcon(false);
+        updateMuteIcon(audioPlayer.muted);
         saveVolumeSettings();
     });
 
@@ -299,7 +359,7 @@ document.addEventListener('DOMContentLoaded', () => {
             loadVolumeSettings();
         } catch (err) {
             console.error(err);
-            tracklist.innerHTML = '<div class="error">Failed to load library.</div>';
+            tracklist.innerHTML = '<div class="status-message">Failed to load library.</div>';
         }
     }
 
