@@ -25,6 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- State ---
     let currentTracks = [];
     let currentIndex = -1;
+    let currentTrack = null;
     let currentView = 'library';
 
     // --- Utilities ---
@@ -74,8 +75,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderTrackItem(track, index) {
         const item = document.createElement('div');
-        item.className = `track-item ${currentIndex === index ? 'active' : ''}`;
+        item.className = `track-item ${(currentTrack && currentTrack.id === track.id) ? "active" : ""}`;
         item.dataset.index = index;
+        item.dataset.id = track.id;
         
         const cover = track.cover_path || '/static/img/default-cover.svg';
         const duration = track.duration ? formatTime(track.duration) : '--:--';
@@ -143,51 +145,43 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Player Logic ---
 
     async function playTrack(index) {
-        if (currentIndex === index && audioPlayer.src) {
-            if (audioPlayer.paused) { audioPlayer.play(); } else { audioPlayer.pause(); }
+        if (index < 0 || index >= currentTracks.length) return;
+        const target = currentTracks[index];
+
+        if (currentTrack && currentTrack.id === target.id) {
+            if (audioPlayer.paused) {
+                audioPlayer.play();
+                updatePlayBtn(true);
+            } else {
+                audioPlayer.pause();
+                updatePlayBtn(false);
+            }
             return;
         }
-        if (index < 0 || index >= currentTracks.length) return;
 
         currentIndex = index;
-        const track = currentTracks[index];
+        currentTrack = target;
+        
+        // Обновляем плеер-док
+        const dockTitle = document.querySelector('.track-title-name, .dock-title');
+        const dockArtist = document.querySelector('.track-artist-name, .dock-artist');
+        const dockCover = document.querySelector('.player-dock img, .dock-cover');
+        if (dockTitle) dockTitle.textContent = target.title || 'Unknown Title';
+        if (dockArtist) dockArtist.textContent = target.artist || 'Unknown Artist';
+        if (dockCover) dockCover.src = target.cover_path || '/static/img/default-cover.svg';
 
-        if (!track.id || track.id === -1 || track.id === '-1') {
-            try {
-                const res = await fetch('/tracks/remote', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify(track)
-                });
-                if (res.ok) {
-                    const saved = await res.json();
-                    track.id = saved.id;
-                    const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
-                    if (activeEl) {
-                        const likeBtn = activeEl.querySelector('.like-btn');
-                        if (likeBtn) likeBtn.dataset.id = saved.id;
-                    }
-                }
-            } catch (err) {
-                console.error("Error registering remote track:", err);
-            }
-        }
+        audioPlayer.src = target.stream_url || `/stream/${target.id}`;
+        audioPlayer.play().then(() => {
+            updatePlayBtn(true);
+        }).catch(err => console.error("Playback error:", err));
 
+        // Снимаем класс active со всех и добавляем текущему
         document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
-        const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
+        const activeEl = document.querySelector(`.track-item[data-id="${target.id}"], .track-item[data-index="${index}"]`);
         if (activeEl) activeEl.classList.add('active');
-
-        playerTitle.textContent = track.title || 'Unknown Title';
-        playerArtist.textContent = track.artist || 'Unknown Artist';
-        playerCover.src = track.cover_path || '/static/img/default-cover.svg';
-        btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
-
-        audioPlayer.src = `/stream/${track.id}`;
-        audioPlayer.play().catch(e => console.log("Play interrupted:", e));
-        btnPlay.querySelector('i').className = 'fas fa-pause-circle';
     }
 
-    function togglePlay() {
+function togglePlay() {
         if (audioPlayer.paused) {
             audioPlayer.play();
             btnPlay.querySelector('i').className = 'fas fa-pause-circle';
