@@ -17,8 +17,10 @@ document.addEventListener('DOMContentLoaded', () => {
     const progressContainer = document.querySelector('.progress-bar');
     const timeCurrent = document.getElementById('time-current');
     const timeTotal = document.getElementById('time-total');
-    const volumeFill = document.getElementById('volume-fill');
-    const volumeSlider = document.querySelector('.volume-slider');
+    
+    const btnMute = document.getElementById('btn-mute');
+    const volumeRange = document.getElementById('volume-range');
+    const volumeIcon = btnMute.querySelector('i');
 
     // --- State ---
     let currentTracks = [];
@@ -97,9 +99,8 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Player Logic ---
 
     async function playTrack(index) {
-        const _audio = document.querySelector('audio');
-        if (currentIndex === index && _audio) {
-            if (_audio.paused) { _audio.play(); } else { _audio.pause(); }
+        if (currentIndex === index && audioPlayer.src) {
+            if (audioPlayer.paused) { audioPlayer.play(); } else { audioPlayer.pause(); }
             return;
         }
         if (index < 0 || index >= currentTracks.length) return;
@@ -107,7 +108,6 @@ document.addEventListener('DOMContentLoaded', () => {
         currentIndex = index;
         const track = currentTracks[index];
 
-        // Если трек пришел из внешнего поиска без id, сохраняем его в SQLite
         if (!track.id || track.id === -1 || track.id === '-1') {
             try {
                 const res = await fetch('/tracks/remote', {
@@ -125,11 +125,10 @@ document.addEventListener('DOMContentLoaded', () => {
                     }
                 }
             } catch (err) {
-                console.error("Не удалось зарегистрировать remote трек:", err);
+                console.error("Error registering remote track:", err);
             }
         }
 
-        // Update UI
         document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
         const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
         if (activeEl) activeEl.classList.add('active');
@@ -139,10 +138,8 @@ document.addEventListener('DOMContentLoaded', () => {
         playerCover.src = track.cover_path || '/static/img/default-cover.svg';
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
 
-        // Audio Source
-        const streamUrl = `/stream/${track.id}`;
-        audioPlayer.src = streamUrl;
-        audioPlayer.play().catch(e => console.log("Play interrupted or loading:", e));
+        audioPlayer.src = `/stream/${track.id}`;
+        audioPlayer.play().catch(e => console.log("Play interrupted:", e));
         btnPlay.querySelector('i').className = 'fas fa-pause-circle';
     }
 
@@ -172,9 +169,35 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    // --- Volume & Mute Logic ---
+
+    function updateMuteIcon(isMuted) {
+        if (isMuted) {
+            volumeIcon.className = 'fas fa-volume-mute';
+        } else if (audioPlayer.volume < 0.5) {
+            volumeIcon.className = 'fas fa-volume-down';
+        } else {
+            volumeIcon.className = 'fas fa-volume-up';
+        }
+    }
+
+    function loadVolumeSettings() {
+        const vol = localStorage.getItem('player:volume') ?? 70;
+        const muted = localStorage.getItem('player:muted') === 'true';
+        
+        volumeRange.value = vol;
+        audioPlayer.volume = vol / 100;
+        audioPlayer.muted = muted;
+        updateMuteIcon(muted);
+    }
+
+    function saveVolumeSettings() {
+        localStorage.setItem('player:volume', volumeRange.value);
+        localStorage.setItem('player:muted', audioPlayer.muted);
+    }
+
     // --- Event Listeners ---
 
-    // Search
     searchInput.addEventListener('keydown', async (e) => {
         if (e.key === 'Enter') {
             const query = e.target.value.trim();
@@ -187,7 +210,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    // Navigation
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', (e) => {
             e.preventDefault();
@@ -203,7 +225,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderTracklist(tracks);
                 });
             } else if (currentView === 'liked') {
-                // For simplicity, we just filter local tracks that are liked
                 fetchTracks({source: 'local'}).then(tracks => {
                     currentTracks = tracks.filter(t => t.liked);
                     renderTracklist(currentTracks);
@@ -212,12 +233,10 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // Player Controls
     btnPlay.addEventListener('click', togglePlay);
     btnNext.addEventListener('click', nextTrack);
     btnPrev.addEventListener('click', prevTrack);
 
-    // Like Toggle (Delegation)
     tracklist.addEventListener('click', async (e) => {
         const likeBtn = e.target.closest('.like-btn');
         if (!likeBtn) return;
@@ -227,11 +246,9 @@ document.addEventListener('DOMContentLoaded', () => {
         
         await toggleLike(trackId, isLiked);
         
-        // Update UI locally
         likeBtn.dataset.liked = !isLiked;
         likeBtn.querySelector('i').className = !isLiked ? 'fas fa-heart' : 'far fa-heart';
         
-        // Update player button if it's the current track
         if (currentIndex !== -1 && currentTracks[currentIndex].id === trackId) {
             btnLikePlayer.querySelector('i').className = !isLiked ? 'fas fa-heart' : 'far fa-heart';
         }
@@ -241,12 +258,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (currentIndex === -1) return;
         const track = currentTracks[currentIndex];
         await toggleLike(track.id, track.liked);
-        // Refresh current track state in memory and UI
         track.liked = !track.liked;
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
     });
 
-    // Audio Progress
     audioPlayer.addEventListener('timeupdate', () => {
         if (audioPlayer.duration) {
             const percent = (audioPlayer.currentTime / audioPlayer.duration) * 100;
@@ -262,12 +277,17 @@ document.addEventListener('DOMContentLoaded', () => {
         audioPlayer.currentTime = pos * audioPlayer.duration;
     });
 
-    // Volume
-    volumeSlider.addEventListener('click', (e) => {
-        const rect = volumeSlider.getBoundingClientRect();
-        const pos = (e.clientX - rect.left) / rect.width;
-        audioPlayer.volume = pos;
-        volumeFill.style.width = `${pos * 100}%`;
+    volumeRange.addEventListener('input', () => {
+        audioPlayer.volume = volumeRange.value / 100;
+        audioPlayer.muted = false;
+        updateMuteIcon(false);
+        saveVolumeSettings();
+    });
+
+    btnMute.addEventListener('click', () => {
+        audioPlayer.muted = !audioPlayer.muted;
+        updateMuteIcon(audioPlayer.muted);
+        saveVolumeSettings();
     });
 
     // --- Initialization ---
@@ -276,6 +296,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const tracks = await fetchTracks();
             currentTracks = tracks;
             renderTracklist(tracks);
+            loadVolumeSettings();
         } catch (err) {
             console.error(err);
             tracklist.innerHTML = '<div class="error">Failed to load library.</div>';
@@ -285,8 +306,6 @@ document.addEventListener('DOMContentLoaded', () => {
     init();
 });
 
-
-// playing-state-sync: синхронизация класса .playing и иконок
 function setupPlayingSync() {
     const audioEl = document.querySelector('audio');
     if (!audioEl) return;
@@ -296,19 +315,17 @@ function setupPlayingSync() {
         const active = document.querySelector('.track-item.active');
         if (active) active.classList.add('playing');
 
-        const playBtnIcon = document.querySelector('#play-btn i, .play-btn i');
+        const playBtnIcon = document.querySelector('#btn-play i');
         if (playBtnIcon) {
-            playBtnIcon.classList.remove('fa-play');
-            playBtnIcon.classList.add('fa-pause');
+            playBtnIcon.className = 'fas fa-pause-circle';
         }
     });
 
     audioEl.addEventListener('pause', () => {
         document.querySelectorAll('.track-item.playing').forEach(el => el.classList.remove('playing'));
-        const playBtnIcon = document.querySelector('#play-btn i, .play-btn i');
+        const playBtnIcon = document.querySelector('#btn-play i');
         if (playBtnIcon) {
-            playBtnIcon.classList.remove('fa-pause');
-            playBtnIcon.classList.add('fa-play');
+            playBtnIcon.className = 'fas fa-play-circle';
         }
     });
 }

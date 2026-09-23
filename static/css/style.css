@@ -140,7 +140,6 @@ body {
     border-left: 4px solid transparent;
 }
 
-/* Spotify-style Play icon instead of track rank on hover */
 .track-rank {
     display: flex;
     align-items: center;
@@ -157,7 +156,6 @@ body {
     font-size: 0;
 }
 
-/* Иконка паузы при наведении на играющий трек */
 .track-item.playing:hover .track-rank::after {
     content: '\f04c';
 }
@@ -179,7 +177,6 @@ body {
     border-left-color: var(--accent);
 }
 
-/* Ensure content is above the overlay */
 .track-item > div {
     position: relative;
     z-index: 2;
@@ -320,20 +317,13 @@ body {
     align-items: center;
     justify-content: flex-end;
     gap: 0.5rem;
+    width: 160px;
 }
 
-.volume-slider {
-    width: 100px;
-    height: 4px;
-    background: rgba(255, 255, 255, 0.1);
-    border-radius: 2px;
-    position: relative;
-}
-
-.volume-fill {
-    height: 100%;
-    background: var(--accent);
-    width: 70%;
+.volume-range {
+    width: 80px;
+    accent-color: var(--accent);
+    cursor: pointer;
 }
 
 /* Responsive */
