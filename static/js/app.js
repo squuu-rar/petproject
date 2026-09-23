@@ -25,9 +25,18 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- State ---
     let currentTracks = [];
     let currentIndex = -1;
+    let currentlyPlayingTrack = null;
     let currentView = 'library';
 
     // --- Utilities ---
+
+    function isSameTrack(a, b) {
+        if (!a || !b) return false;
+        if (a.id && b.id && a.id !== -1 && b.id !== -1 && a.id !== '-1' && b.id !== '-1') {
+            return a.id === b.id;
+        }
+        return a.title === b.title && a.artist === b.artist;
+    }
 
     function debounce(func, wait) {
         let timeout;
@@ -74,8 +83,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderTrackItem(track, index) {
         const item = document.createElement('div');
-        item.className = `track-item ${currentIndex === index ? 'active' : ''}`;
+        const isActive = isSameTrack(currentlyPlayingTrack, track);
+        item.className = `track-item ${isActive ? 'active' : ''}`;
         item.dataset.index = index;
+        if (track.id) item.dataset.id = track.id;
         
         const cover = track.cover_path || '/static/img/default-cover.svg';
         const duration = track.duration ? formatTime(track.duration) : '--:--';
@@ -92,7 +103,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="track-album">${track.album || '-'}</div>
             <div class="track-duration">${duration}</div>
             <div class="track-actions">
-                <button class="icon-btn like-btn" data-id="${track.id}" data-liked="${track.liked}">
+                <button class="icon-btn like-btn" data-id="${track.id || ''}" data-liked="${track.liked}">
                     <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
                 </button>
             </div>
@@ -143,14 +154,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Player Logic ---
 
     async function playTrack(index) {
-        if (currentIndex === index && audioPlayer.src) {
-            if (audioPlayer.paused) { audioPlayer.play(); } else { audioPlayer.pause(); }
+        if (index < 0 || index >= currentTracks.length) return;
+        const track = currentTracks[index];
+
+        // Если кликнули на действительно играющий сейчас трек — переключаем плей/паузу
+        if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src) {
+            if (audioPlayer.paused) { 
+                audioPlayer.play(); 
+            } else { 
+                audioPlayer.pause(); 
+            }
             return;
         }
-        if (index < 0 || index >= currentTracks.length) return;
 
         currentIndex = index;
-        const track = currentTracks[index];
+        currentlyPlayingTrack = track;
 
         if (!track.id || track.id === -1 || track.id === '-1') {
             try {
@@ -162,8 +180,10 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (res.ok) {
                     const saved = await res.json();
                     track.id = saved.id;
+                    currentlyPlayingTrack.id = saved.id;
                     const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
                     if (activeEl) {
+                        activeEl.dataset.id = saved.id;
                         const likeBtn = activeEl.querySelector('.like-btn');
                         if (likeBtn) likeBtn.dataset.id = saved.id;
                     }
@@ -248,6 +268,7 @@ document.addEventListener('DOMContentLoaded', () => {
             currentView = 'library';
             fetchTracks().then(tracks => {
                 currentTracks = tracks;
+                currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
                 renderTracklist(tracks);
             });
             return;
@@ -259,6 +280,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const results = await searchTracks(query);
             currentTracks = results;
+            currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
             renderSearchResults(results);
         } catch (err) {
             console.error(err);
@@ -282,11 +304,13 @@ document.addEventListener('DOMContentLoaded', () => {
             if (currentView === 'library') {
                 fetchTracks().then(tracks => {
                     currentTracks = tracks;
+                    currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
                     renderTracklist(tracks);
                 });
             } else if (currentView === 'liked') {
                 fetchTracks({source: 'local'}).then(tracks => {
                     currentTracks = tracks.filter(t => t.liked);
+                    currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
                     renderTracklist(currentTracks);
                 });
             }
@@ -299,7 +323,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     tracklist.addEventListener('click', async (e) => {
         const likeBtn = e.target.closest('.like-btn');
-        if (!likeBtn) return;
+        if (!likeBtn || !likeBtn.dataset.id) return;
 
         const trackId = parseInt(likeBtn.dataset.id);
         const isLiked = likeBtn.dataset.liked === 'true';
@@ -309,17 +333,27 @@ document.addEventListener('DOMContentLoaded', () => {
         likeBtn.dataset.liked = !isLiked;
         likeBtn.querySelector('i').className = !isLiked ? 'fas fa-heart' : 'far fa-heart';
         
-        if (currentIndex !== -1 && currentTracks[currentIndex].id === trackId) {
+        if (currentlyPlayingTrack && currentlyPlayingTrack.id === trackId) {
+            currentlyPlayingTrack.liked = !isLiked;
             btnLikePlayer.querySelector('i').className = !isLiked ? 'fas fa-heart' : 'far fa-heart';
         }
     });
 
     btnLikePlayer.addEventListener('click', async () => {
-        if (currentIndex === -1) return;
-        const track = currentTracks[currentIndex];
+        const track = currentlyPlayingTrack || (currentIndex !== -1 ? currentTracks[currentIndex] : null);
+        if (!track || !track.id) return;
         await toggleLike(track.id, track.liked);
         track.liked = !track.liked;
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
+        
+        const activeItem = tracklist.querySelector(`.track-item[data-id="${track.id}"]`);
+        if (activeItem) {
+            const likeBtn = activeItem.querySelector('.like-btn');
+            if (likeBtn) {
+                likeBtn.dataset.liked = track.liked;
+                likeBtn.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
+            }
+        }
     });
 
     audioPlayer.addEventListener('timeupdate', () => {
