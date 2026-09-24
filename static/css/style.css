@@ -130,6 +130,7 @@ body {
 .track-item {
     display: grid;
     grid-template-columns: 50px 1fr 1fr 80px 40px;
+    gap: 1rem;
     align-items: center;
     padding: 0.5rem 1rem;
     border-radius: 4px;

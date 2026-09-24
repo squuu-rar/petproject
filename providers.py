@@ -119,11 +119,31 @@ class RemoteDiscoveryProvider(StreamSource):
             search_results = []
             for r in results:
                 if r.get("resultType") == "song":
+                    # 1. Извлекаем обложку высокого разрешения
+                    thumbs = r.get("thumbnails", [])
+                    cover_url = thumbs[-1]["url"] if thumbs else None
+
+                    # 2. Переводим длительность "mm:ss" в секунды
+                    duration_sec = r.get("duration_seconds")
+                    if not duration_sec and r.get("duration"):
+                        try:
+                            parts = [int(p) for p in str(r["duration"]).split(":")]
+                            if len(parts) == 2:
+                                duration_sec = parts[0] * 60 + parts[1]
+                            elif len(parts) == 3:
+                                duration_sec = parts[0] * 3600 + parts[1] * 60 + parts[2]
+                        except Exception:
+                            duration_sec = None
+
                     search_results.append({
                         "title": r.get("title"),
                         "artist": r.get("artists", [{}])[0].get("name") if r.get("artists") else None,
                         "album": r.get("album", {}).get("name") if r.get("album") else None,
+                        "duration": duration_sec,
+                        "cover_path": cover_url,
+                        "source": "remote",
                         "video_id": r.get("videoId"),
+                        "external_id": r.get("videoId"),
                     })
             return search_results
         except Exception:

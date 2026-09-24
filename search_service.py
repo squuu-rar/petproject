@@ -12,9 +12,9 @@ class LocalSearchService:
         search_term = f"%{query}%"
         sql = """
             SELECT * FROM tracks 
-            WHERE title LIKE ? 
-               OR artist LIKE ? 
-               OR album LIKE ?
+            WHERE LOWER(title) LIKE LOWER(?) 
+               OR LOWER(artist) LIKE LOWER(?) 
+               OR LOWER(album) LIKE LOWER(?)
         """
         conn = get_db()
         try:
@@ -56,8 +56,8 @@ class SearchOrchestrator:
                 "genre": None,
                 "year": None,
                 "track_number": None,
-                "duration": None,
-                "cover_path": None,
+                "duration": r.get("duration"),
+                "cover_path": r.get("cover_path"),
                 "source": "remote",
                 "external_id": r.get("video_id"),
                 "cache_path": None
