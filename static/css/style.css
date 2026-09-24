@@ -246,6 +246,7 @@ body {
     height: 56px;
     border-radius: 4px;
     object-fit: cover;
+    background-color: #333;
 }
 
 .track-details {
@@ -322,6 +323,7 @@ body {
     background: var(--accent);
     width: 0%;
     border-radius: 2px;
+    pointer-events: none; /* Important: allows clicks to pass to .progress-bar */
 }
 
 .player-volume {

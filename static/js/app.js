@@ -27,6 +27,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentIndex = -1;
     let currentlyPlayingTrack = null;
     let currentView = 'library';
+    let isDragging = false;
 
     // --- Utilities ---
 
@@ -51,7 +52,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function formatTime(seconds) {
-        if (!seconds) return '--:--';
+        if (!seconds || isNaN(seconds)) return '0:00';
         const mins = Math.floor(seconds / 60);
         const secs = Math.floor(seconds % 60);
         return `${mins}:${secs.toString().padStart(2, '0')}`;
@@ -88,7 +89,7 @@ document.addEventListener('DOMContentLoaded', () => {
         item.dataset.index = index;
         if (track.id) item.dataset.id = track.id;
         
-        const cover = track.cover_path || '/static/img/default-cover.svg';
+        const cover = track.cover_path || '/static/img/default-cover.png';
         const duration = track.duration ? formatTime(track.duration) : '--:--';
 
         item.innerHTML = `
@@ -157,7 +158,6 @@ document.addEventListener('DOMContentLoaded', () => {
         if (index < 0 || index >= currentTracks.length) return;
         const track = currentTracks[index];
 
-        // Если кликнули на действительно играющий сейчас трек — переключаем плей/паузу
         if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src) {
             if (audioPlayer.paused) { 
                 audioPlayer.play(); 
@@ -199,7 +199,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         playerTitle.textContent = track.title || 'Unknown Title';
         playerArtist.textContent = track.artist || 'Unknown Artist';
-        playerCover.src = track.cover_path || '/static/img/default-cover.svg';
+        playerCover.src = track.cover_path || '/static/img/default-cover.png';
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
 
         audioPlayer.src = `/stream/${track.id}`;
@@ -356,20 +356,71 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    audioPlayer.addEventListener('timeupdate', () => {
+    // --- Progress Bar Logic ---
+
+    function updateProgress() {
         if (audioPlayer.duration) {
             const percent = (audioPlayer.currentTime / audioPlayer.duration) * 100;
             progressFill.style.width = `${percent}%`;
             timeCurrent.textContent = formatTime(audioPlayer.currentTime);
             timeTotal.textContent = formatTime(audioPlayer.duration);
         }
-    });
+    }
 
-    progressContainer.addEventListener('click', (e) => {
+    function seek(e) {
         const rect = progressContainer.getBoundingClientRect();
         const pos = (e.clientX - rect.left) / rect.width;
-        audioPlayer.currentTime = pos * audioPlayer.duration;
+        const newTime = pos * audioPlayer.duration;
+        audioPlayer.currentTime = newTime;
+    }
+
+    audioPlayer.addEventListener('timeupdate', updateProgress);
+
+    progressContainer.addEventListener('click', (e) => {
+        seek(e);
     });
+
+    progressContainer.addEventListener('mousedown', (e) => {
+        isDragging = true;
+        seek(e);
+    });
+
+    window.addEventListener('mousemove', (e) => {
+        if (isDragging) {
+            seek(e);
+        }
+    });
+
+    window.addEventListener('mouseup', () => {
+        isDragging = false;
+    });
+
+    // --- Volume & Mute Logic ---
+
+    function updateMuteIcon(isMuted) {
+        if (isMuted) {
+            volumeIcon.className = 'fas fa-volume-mute';
+        } else if (audioPlayer.volume < 0.5) {
+            volumeIcon.className = 'fas fa-volume-down';
+        } else {
+            volumeIcon.className = 'fas fa-volume-up';
+        }
+    }
+
+    function loadVolumeSettings() {
+        const vol = localStorage.getItem('player:volume') ?? 70;
+        const muted = localStorage.getItem('player:muted') === 'true';
+        
+        volumeRange.value = vol;
+        audioPlayer.volume = vol / 100;
+        audioPlayer.muted = muted;
+        updateMuteIcon(muted);
+    }
+
+    function saveVolumeSettings() {
+        localStorage.setItem('player:volume', volumeRange.value);
+        localStorage.setItem('player:muted', audioPlayer.muted);
+    }
 
     volumeRange.addEventListener('input', () => {
         audioPlayer.volume = volumeRange.value / 100;
