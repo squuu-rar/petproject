@@ -80,6 +80,47 @@
 
         <audio id="audio-player"></audio>
     </div>
-    <script src="/static/js/app.js"></script>
+    
+    <!-- Fullscreen Lyrics Overlay -->
+    <div id="lyrics-overlay" class="lyrics-overlay hidden">
+        <button id="btn-close-lyrics" class="btn-close-lyrics" title="Свернуть" onclick="document.getElementById('lyrics-overlay').classList.add('hidden')">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        </button>
+        <div class="lyrics-content">
+            <div class="lyrics-left">
+                <img id="lyrics-cover" src="/static/img/default-cover.png" alt="Cover" class="lyrics-big-cover">
+                <div class="lyrics-track-info">
+                    <h2 id="lyrics-title" class="lyrics-title">Название трека</h2>
+                    <p id="lyrics-artist" class="lyrics-artist">Исполнитель</p>
+                </div>
+                <div class="lyrics-progress-wrap">
+                    <div class="lyrics-progress-bar" id="lyrics-progress-container">
+                        <div id="lyrics-progress-fill" class="lyrics-progress-fill"></div>
+                    </div>
+                    <div class="lyrics-time-display">
+                        <span id="lyrics-time-current">0:00</span>
+                        <span id="lyrics-time-total">0:00</span>
+                    </div>
+                </div>
+            </div>
+            <div class="lyrics-right" id="lyrics-scroll-container">
+                <div id="lyrics-lines" class="lyrics-lines">
+                    <p class="lyrics-status">Нажмите на трек для загрузки текста</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="/static/js/app.js" defer></script>
+
+    
+            <div class="lyrics-right" id="lyrics-scroll-container">
+                <div id="lyrics-lines" class="lyrics-lines">
+                    <p class="lyrics-status">Нажмите на трек для загрузки текста</p>
+                </div>
+            </div>
+        </div>
+    </div>
+
 </body>
 </html>

@@ -110,7 +110,10 @@ document.addEventListener('DOMContentLoaded', () => {
             </div>
         `;
 
-        item.addEventListener('click', () => playTrack(index));
+        item.addEventListener('click', (e) => {
+            if (e.target.closest('.like-btn')) return;
+            playTrack(index);
+        });
         return item;
     }
 
@@ -339,7 +342,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
-    btnLikePlayer.addEventListener('click', async () => {
+    btnLikePlayer.addEventListener('click', async (e) => {
+        if (e) e.stopPropagation();
         const track = currentlyPlayingTrack || (currentIndex !== -1 ? currentTracks[currentIndex] : null);
         if (!track || !track.id) return;
         await toggleLike(track.id, track.liked);
@@ -480,3 +484,188 @@ if (document.readyState === 'loading') {
 } else {
     setupPlayingSync();
 }
+
+// --- Synced Lyrics Overlay Module ---
+document.addEventListener('DOMContentLoaded', () => {
+    const overlay = document.getElementById('lyrics-overlay');
+    const btnClose = document.getElementById('btn-close-lyrics');
+    const coverDock = document.getElementById('player-cover');
+    const bigCover = document.getElementById('lyrics-cover');
+    const bigTitle = document.getElementById('lyrics-title');
+    const bigArtist = document.getElementById('lyrics-artist');
+    const lyricsLinesBox = document.getElementById('lyrics-lines');
+    const bigProgressFill = document.getElementById('lyrics-progress-fill');
+    const bigTimeCurrent = document.getElementById('lyrics-time-current');
+    const bigTimeTotal = document.getElementById('lyrics-time-total');
+    const bigProgressBar = document.getElementById('lyrics-progress-container');
+    const audioEl = document.getElementById('audio-player');
+
+    if (!overlay) return;
+
+    let syncedLines = [];
+    let activeLineIdx = -1;
+    let isOverlayOpen = false;
+
+    function parseLRC(lrcText) {
+        if (!lrcText) return [];
+        const lines = lrcText.split('\n');
+        const parsed = [];
+        const regex = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/;
+
+        for (const line of lines) {
+            const match = line.match(regex);
+            if (match) {
+                const min = parseInt(match[1], 10);
+                const sec = parseInt(match[2], 10);
+                const ms = match[3] ? parseInt(match[3].padEnd(3, '0'), 10) : 0;
+                const time = min * 60 + sec + ms / 1000;
+                const text = line.replace(regex, '').trim();
+                if (text) parsed.push({ time, text });
+            }
+        }
+        return parsed.sort((a, b) => a.time - b.time);
+    }
+
+    async function loadLyrics() {
+        const title = document.getElementById('player-title')?.textContent?.trim() || '';
+        const artist = document.getElementById('player-artist')?.textContent?.trim() || '';
+
+        if (!title || title === 'No track selected' || title === 'Select a song') {
+            lyricsLinesBox.innerHTML = '<p class="lyrics-status">Включите песню для просмотра текста</p>';
+            return;
+        }
+
+        lyricsLinesBox.innerHTML = '<p class="lyrics-status"><i class="fas fa-spinner fa-spin"></i> Загрузка слов...</p>';
+        syncedLines = [];
+        activeLineIdx = -1;
+
+        try {
+            const dur = audioEl?.duration || 0;
+            const res = await fetch(`/lyrics?artist=${encodeURIComponent(artist)}&title=${encodeURIComponent(title)}&duration=${dur}`);
+            if (!res.ok) throw new Error("Lyrics fetch failed");
+            const data = await res.json();
+
+            if (data.syncedLyrics) {
+                syncedLines = parseLRC(data.syncedLyrics);
+                renderLyricsLines();
+            } else if (data.plainLyrics) {
+                lyricsLinesBox.innerHTML = data.plainLyrics
+                    .split('\n')
+                    .map(line => `<div class="lyrics-line active">${line || '&nbsp;'}</div>`)
+                    .join('');
+            } else {
+                lyricsLinesBox.innerHTML = '<p class="lyrics-status">Текст для этого трека не найден</p>';
+            }
+        } catch (e) {
+            lyricsLinesBox.innerHTML = '<p class="lyrics-status">Не удалось загрузить слова</p>';
+        }
+    }
+
+    function renderLyricsLines() {
+        lyricsLinesBox.innerHTML = '';
+        syncedLines.forEach((item, index) => {
+            const el = document.createElement('div');
+            el.className = 'lyrics-line';
+            el.dataset.index = index;
+            el.textContent = item.text;
+            el.addEventListener('click', () => {
+                if (audioEl) audioEl.currentTime = item.time;
+            });
+            lyricsLinesBox.appendChild(el);
+        });
+    }
+
+    function openOverlay() {
+        isOverlayOpen = true;
+        overlay.classList.remove('hidden');
+
+        if (coverDock && bigCover) bigCover.src = coverDock.src;
+        if (bigTitle) bigTitle.textContent = document.getElementById('player-title')?.textContent || '';
+        if (bigArtist) bigArtist.textContent = document.getElementById('player-artist')?.textContent || '';
+
+        loadLyrics();
+    }
+
+    function closeOverlay() {
+        isOverlayOpen = false;
+        overlay.classList.add('hidden');
+    }
+
+    if (coverDock) {
+        coverDock.addEventListener('click', openOverlay);
+        coverDock.style.cursor = 'pointer';
+        coverDock.title = 'Открыть текст песни';
+    }
+
+    const playerDetails = document.querySelector('.track-details');
+    if (playerDetails) {
+        playerDetails.addEventListener('click', openOverlay);
+        playerDetails.style.cursor = 'pointer';
+    }
+
+    if (btnClose) {
+        btnClose.addEventListener('click', closeOverlay);
+    }
+
+    window.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && isOverlayOpen) closeOverlay();
+    });
+
+    if (bigProgressBar && audioEl) {
+        bigProgressBar.addEventListener('click', (e) => {
+            const rect = bigProgressBar.getBoundingClientRect();
+            const pos = (e.clientX - rect.left) / rect.width;
+            audioEl.currentTime = pos * audioEl.duration;
+        });
+    }
+
+    if (audioEl) {
+        audioEl.addEventListener('timeupdate', () => {
+            if (!isOverlayOpen) return;
+
+            const cur = audioEl.currentTime;
+            const dur = audioEl.duration;
+
+            if (dur && bigProgressFill) {
+                bigProgressFill.style.width = `${(cur / dur) * 100}%`;
+                const mins = Math.floor(cur / 60);
+                const secs = Math.floor(cur % 60);
+                if (bigTimeCurrent) bigTimeCurrent.textContent = `${mins}:${secs.toString().padStart(2, '0')}`;
+
+                const tmins = Math.floor(dur / 60);
+                const tsecs = Math.floor(dur % 60);
+                if (bigTimeTotal) bigTimeTotal.textContent = `${tmins}:${tsecs.toString().padStart(2, '0')}`;
+            }
+
+            if (syncedLines.length === 0) return;
+
+            let foundIdx = -1;
+            for (let i = 0; i < syncedLines.length; i++) {
+                if (cur >= syncedLines[i].time) {
+                    foundIdx = i;
+                } else {
+                    break;
+                }
+            }
+
+            if (foundIdx !== activeLineIdx && foundIdx !== -1) {
+                activeLineIdx = foundIdx;
+                document.querySelectorAll('.lyrics-line').forEach(el => el.classList.remove('active'));
+                const lineEl = lyricsLinesBox.querySelector(`[data-index="${foundIdx}"]`);
+                if (lineEl) {
+                    lineEl.classList.add('active');
+                    lineEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                }
+            }
+        });
+
+        audioEl.addEventListener('play', () => {
+            if (isOverlayOpen) {
+                if (coverDock && bigCover) bigCover.src = coverDock.src;
+                if (bigTitle) bigTitle.textContent = document.getElementById('player-title')?.textContent || '';
+                if (bigArtist) bigArtist.textContent = document.getElementById('player-artist')?.textContent || '';
+                loadLyrics();
+            }
+        });
+    }
+});

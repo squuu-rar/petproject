@@ -120,3 +120,9 @@ def toggle_like(track_id: int, liked: bool = Query(...)):
         return {"status": "ok"}
     finally:
         conn.close()
+
+from lyrics import fetch_lyrics
+
+@app.get("/lyrics")
+def get_track_lyrics(artist: str, title: str, duration: float = None):
+    return fetch_lyrics(artist, title, duration)
