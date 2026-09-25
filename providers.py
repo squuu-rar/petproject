@@ -115,7 +115,7 @@ class RemoteDiscoveryProvider(StreamSource):
     def search(self, query: str) -> list[dict[str, Any]]:
         """Search for songs on YouTube Music."""
         try:
-            results = self.ytmusic.search(query, filter="songs")
+            results = self.ytmusic.search(query, filter="songs", limit=60)
             search_results = []
             for r in results:
                 if r.get("resultType") == "song":
