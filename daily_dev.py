@@ -32,8 +32,8 @@ IGNORED_SYSTEM_FILES = {
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
 # Лимиты контекста для модели
-MAX_FILE_CONTEXT_CHARS = 35000
-MAX_TOTAL_CONTEXT_CHARS = 130000
+MAX_FILE_CONTEXT_CHARS = 20000
+MAX_TOTAL_CONTEXT_CHARS = 60000
 
 # Отслеживаемые типы файлов для фронтенда и бэкенда
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
@@ -219,7 +219,36 @@ def has_staged_code_changes():
         return True
     return False
 
+def validate_frontend() -> tuple[bool, str]:
+    import shutil
+    # Проверка синтаксиса JS файлов через Node.js
+    node_bin = shutil.which("node")
+    if node_bin:
+        js_dir = REPO_DIR / "static" / "js"
+        if js_dir.exists():
+            for js_file in js_dir.glob("*.js"):
+                res = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
+                if res.returncode != 0:
+                    return False, f"JS Syntax Error in {js_file.name}:
+{res.stderr.strip()}"
+
+    # Проверка целостности HTML (наличие script тега для app.js)
+    for html_path in [REPO_DIR / "static" / "index.html", REPO_DIR / "index.html"]:
+        if html_path.exists():
+            html_text = html_path.read_text(encoding="utf-8")
+            if "app.js" not in html_text or "<script" not in html_text:
+                return False, f"HTML Error: {html_path.name} is missing <script> tag for app.js"
+
+    return True, ""
+
 def run_tests():
+    # 1. Проверяем фронтенд перед бэкенд-тестами
+    ok, err = validate_frontend()
+    if not ok:
+        return False, f"Frontend validation failed:
+{err}"
+
+    # 2. Проверяем pytest
     if not (REPO_DIR / "tests").exists():
         return True, "Тестов нет"
     res = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO_DIR, capture_output=True, text=True)

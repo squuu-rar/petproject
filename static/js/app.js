@@ -29,6 +29,8 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentlyPlayingTrack = null;
     let currentView = 'library';
     let isDragging = false;
+    let lastSearchResults = [];
+    let lastSearchQuery = '';
 
     // --- Utilities ---
 
@@ -118,6 +120,23 @@ document.addEventListener('DOMContentLoaded', () => {
         return item;
     }
 
+    
+    function updateActiveTrackUI() {
+        if (!currentlyPlayingTrack) return;
+        const items = tracklist.querySelectorAll('.track-item');
+        items.forEach((el, idx) => {
+            const track = playbackQueue.queue[idx];
+            if (track && isSameTrack(track, currentlyPlayingTrack)) {
+                el.classList.add('active');
+                if (!audioPlayer.paused) {
+                    el.classList.add('playing');
+                }
+            } else {
+                el.classList.remove('active', 'playing');
+            }
+        });
+    }
+
     function renderTracklist(tracks) {
         tracklist.innerHTML = '';
         if (tracks.length === 0) {
@@ -129,6 +148,7 @@ document.addEventListener('DOMContentLoaded', () => {
         tracks.forEach((track, index) => {
             tracklist.appendChild(renderTrackItem(track, index));
         });
+        updateActiveTrackUI();
     }
 
     function renderSearchResults(results) {
@@ -156,6 +176,7 @@ document.addEventListener('DOMContentLoaded', () => {
             items.forEach(({ track, idx }) => {
                 tracklist.appendChild(renderTrackItem(track, idx));
             });
+        updateActiveTrackUI();
         }
     }
 
@@ -270,9 +291,12 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Event Listeners ---
 
     const handleSearch = debounce(async (query) => {
+        lastSearchQuery = query;
         if (!query) {
+            lastSearchResults = [];
             viewTitle.textContent = "Your Library";
             currentView = 'library';
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.view === 'library'));
             fetchTracks().then(tracks => {
                 renderTracklist(tracks);
                 currentlyPlayingTrack = playbackQueue.getCurrentTrack();
@@ -280,11 +304,15 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        currentView = 'search';
+        document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.view === 'search'));
+
         viewTitle.textContent = `Results for "${query}"`;
         tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
         
         try {
             const results = await searchTracks(query);
+            lastSearchResults = results;
             renderSearchResults(results);
             currentlyPlayingTrack = playbackQueue.getCurrentTrack();
         } catch (err) {
@@ -317,12 +345,24 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderTracklist(likedTracks);
                     currentlyPlayingTrack = playbackQueue.getCurrentTrack();
                 });
+            } else if (currentView === 'search') {
+                if (lastSearchResults.length > 0) {
+                    viewTitle.textContent = `Results for "${lastSearchQuery}"`;
+                    searchInput.value = lastSearchQuery;
+                    renderSearchResults(lastSearchResults);
+                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
+                } else {
+                    viewTitle.textContent = "Search";
+                    tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска выше</div>';
+                    searchInput.focus();
+                }
             }
         });
     });
 
     btnPlay.addEventListener('click', togglePlay);
     btnNext.addEventListener('click', nextTrack);
+    audioPlayer.addEventListener('ended', nextTrack);
     btnPrev.addEventListener('click', prevTrack);
 
     tracklist.addEventListener('click', async (e) => {
@@ -336,6 +376,11 @@ document.addEventListener('DOMContentLoaded', () => {
         
         likeBtn.dataset.liked = !isLiked;
         likeBtn.querySelector('i').className = !isLiked ? 'fas fa-heart' : 'far fa-heart';
+        
+        if (lastSearchResults && lastSearchResults.length > 0) {
+            const foundInSearch = lastSearchResults.find(t => t.id === trackId);
+            if (foundInSearch) foundInSearch.liked = !isLiked;
+        }
         
         if (currentlyPlayingTrack && currentlyPlayingTrack.id === trackId) {
             currentlyPlayingTrack.liked = !isLiked;
