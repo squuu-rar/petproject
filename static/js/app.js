@@ -1,3 +1,5 @@
+import PlaybackQueue from './playback_queue.js';
+
 document.addEventListener('DOMContentLoaded', () => {
     // --- DOM Elements ---
     const tracklist = document.getElementById('tracklist');
@@ -23,8 +25,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const volumeIcon = btnMute.querySelector('i');
 
     // --- State ---
-    let currentTracks = [];
-    let currentIndex = -1;
+    const playbackQueue = new PlaybackQueue();
     let currentlyPlayingTrack = null;
     let currentView = 'library';
     let isDragging = false;
@@ -124,6 +125,7 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        playbackQueue.setQueue(tracks);
         tracks.forEach((track, index) => {
             tracklist.appendChild(renderTrackItem(track, index));
         });
@@ -135,6 +137,8 @@ document.addEventListener('DOMContentLoaded', () => {
             tracklist.innerHTML = '<div class="status-message">Ничего не найдено</div>';
             return;
         }
+
+        playbackQueue.setQueue(results);
 
         const groups = results.reduce((acc, track, idx) => {
             const label = track.source === 'local' ? 'Локально' : 'Найдено';
@@ -158,19 +162,21 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Player Logic ---
 
     async function playTrack(index) {
-        if (index < 0 || index >= currentTracks.length) return;
-        const track = currentTracks[index];
+        if (index < 0 || index >= playbackQueue.length) return;
+        const track = playbackQueue.queue[index];
 
         if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src) {
             if (audioPlayer.paused) { 
                 audioPlayer.play(); 
+                btnPlay.querySelector('i').className = 'fas fa-pause-circle';
             } else { 
                 audioPlayer.pause(); 
+                btnPlay.querySelector('i').className = 'fas fa-play-circle';
             }
             return;
         }
 
-        currentIndex = index;
+        playbackQueue.playAt(index);
         currentlyPlayingTrack = track;
 
         if (!track.id || track.id === -1 || track.id === '-1') {
@@ -221,18 +227,16 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function nextTrack() {
-        if (currentIndex < currentTracks.length - 1) {
-            playTrack(currentIndex + 1);
-        } else {
-            playTrack(0);
+        const next = playbackQueue.next();
+        if (next) {
+            playTrack(playbackQueue.index);
         }
     }
 
     function prevTrack() {
-        if (currentIndex > 0) {
-            playTrack(currentIndex - 1);
-        } else {
-            playTrack(0);
+        const prev = playbackQueue.previous();
+        if (prev) {
+            playTrack(playbackQueue.index);
         }
     }
 
@@ -270,9 +274,8 @@ document.addEventListener('DOMContentLoaded', () => {
             viewTitle.textContent = "Your Library";
             currentView = 'library';
             fetchTracks().then(tracks => {
-                currentTracks = tracks;
-                currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
                 renderTracklist(tracks);
+                currentlyPlayingTrack = playbackQueue.getCurrentTrack();
             });
             return;
         }
@@ -282,9 +285,8 @@ document.addEventListener('DOMContentLoaded', () => {
         
         try {
             const results = await searchTracks(query);
-            currentTracks = results;
-            currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
             renderSearchResults(results);
+            currentlyPlayingTrack = playbackQueue.getCurrentTrack();
         } catch (err) {
             console.error(err);
             tracklist.innerHTML = '<div class="status-message">Search error occurred</div>';
@@ -306,15 +308,14 @@ document.addEventListener('DOMContentLoaded', () => {
             
             if (currentView === 'library') {
                 fetchTracks().then(tracks => {
-                    currentTracks = tracks;
-                    currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
                     renderTracklist(tracks);
+                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
                 });
             } else if (currentView === 'liked') {
                 fetchTracks({source: 'local'}).then(tracks => {
-                    currentTracks = tracks.filter(t => t.liked);
-                    currentIndex = currentTracks.findIndex(t => isSameTrack(t, currentlyPlayingTrack));
-                    renderTracklist(currentTracks);
+                    const likedTracks = tracks.filter(t => t.liked);
+                    renderTracklist(likedTracks);
+                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
                 });
             }
         });
@@ -344,7 +345,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     btnLikePlayer.addEventListener('click', async (e) => {
         if (e) e.stopPropagation();
-        const track = currentlyPlayingTrack || (currentIndex !== -1 ? currentTracks[currentIndex] : null);
+        const track = currentlyPlayingTrack || (playbackQueue.index !== -1 ? playbackQueue.queue[playbackQueue.index] : null);
         if (!track || !track.id) return;
         await toggleLike(track.id, track.liked);
         track.liked = !track.liked;
@@ -443,7 +444,6 @@ document.addEventListener('DOMContentLoaded', () => {
     async function init() {
         try {
             const tracks = await fetchTracks();
-            currentTracks = tracks;
             renderTracklist(tracks);
             loadVolumeSettings();
         } catch (err) {
@@ -531,7 +531,7 @@ document.addEventListener('DOMContentLoaded', () => {
         const artist = document.getElementById('player-artist')?.textContent?.trim() || '';
 
         if (!title || title === 'No track selected' || title === 'Select a song') {
-            lyricsLinesBox.innerHTML = '<p class="lyrics-status">Включите песню для просмотра текста</p>';
+            lyricsLinesBox.innerHTML = '<p class="lyrics-status">Нажмите на трек для загрузки текста</p>';
             return;
         }
 

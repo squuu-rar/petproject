@@ -25,7 +25,7 @@
 - [x] frontend: volume slider (range input 0-100) wired to `audio.volume`, mute toggle icon button, both persisted to localStorage (`player:volume`, `player:muted`) and restored on page load
 - [x] frontend: search bar with 300ms debounce calling GET /search?q=; replaces the tracklist view with results grouped by source ("Локально" / "Найдено"), with empty-state and loading-state
 - [x] frontend: player dock shows album artwork (cover_path or placeholder), elapsed/total time formatted mm:ss, progress bar synced to `audio.currentTime` via the `timeupdate` event, draggable to seek
-- [ ] frontend: playback queue module (array + index pointer) exposing next()/previous()/playAt(i); auto-advances to the next queued track on the `ended` event, no-ops at the end of the queue
+- [x] frontend: playback queue module (array + index pointer) exposing next()/previous()/playAt(i); auto-advances to the next queued track on the `ended` event, no-ops at the end of the queue
 - [ ] frontend: heart/like button in the player dock calling POST /tracks/{id}/like, toggling filled/outline state optimistically and reconciling with the API response
 - [ ] frontend: "Любимые треки" section in the sidebar rendering GET /favorites results with the same track card component as the main list
 
