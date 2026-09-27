@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
-NUM_CTX = 65536
-MAX_PREDICT = 49152
+from __future__ import annotations
+
 import ast
 import json
 import os
@@ -24,6 +24,10 @@ CPTR_ENDPOINT = _raw_ep.strip("[]()\"' \t\r\n")
 CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest").strip()
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
+# Лимиты токенов
+NUM_CTX = int(os.environ.get("CPTR_NUM_CTX", "65536"))
+MAX_PREDICT = int(os.environ.get("CPTR_MAX_PREDICT", "49152"))
+
 MAX_ATTEMPTS = 3
 IGNORED_SYSTEM_FILES = {
     "TASKS.md", "daily_dev.log", "daily_dev.py", "daily_dev_2.py",
@@ -38,11 +42,9 @@ MAX_TOTAL_CONTEXT_CHARS = 60000
 # Отслеживаемые типы файлов для фронтенда и бэкенда
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
 
-# Защита от потери объёма при полной перезаписи
 SHRINK_GUARD_RATIO = 0.6
 MIN_OLD_LEN_FOR_SHRINK_CHECK = 250
 
-# Маркеры, указывающие на ленивую генерацию с пропуском исходного кода
 LAZY_PATTERNS = [
     "... (обрезано",
     "// rest of code",
@@ -93,7 +95,8 @@ def mark_task_done(index):
     lines[index] = re.sub(r"\[\s*\]", "[x]", lines[index], count=1)
     TASKS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
-def get_repo_context():
+def get_repo_context(task_text: str = "") -> str:
+    is_frontend_task = "frontend:" in task_text.lower()
     all_files = set()
     for pattern in CONTEXT_GLOBS:
         all_files.update(REPO_DIR.rglob(pattern))
@@ -103,9 +106,18 @@ def get_repo_context():
         rel = p.relative_to(REPO_DIR)
         if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
+        if is_frontend_task and p.suffix == ".py":
+            continue
         candidates.append(p)
 
-    candidates.sort(key=lambda p: p.stat().st_mtime, reverse=True)
+    keywords = set(re.findall(r"[a-zA-Zа-яА-Я_]{3,}", task_text.lower())) if task_text else set()
+
+    def sort_key(p: Path):
+        rel_str = str(p.relative_to(REPO_DIR)).lower()
+        relevance = sum(1 for kw in keywords if kw in rel_str)
+        return (-relevance, -p.stat().st_mtime)
+
+    candidates.sort(key=sort_key)
 
     included = []
     skipped = []
@@ -220,8 +232,6 @@ def has_staged_code_changes():
     return False
 
 def validate_frontend() -> tuple[bool, str]:
-    import shutil
-    # Проверка синтаксиса JS файлов через Node.js
     node_bin = shutil.which("node")
     if node_bin:
         js_dir = REPO_DIR / "static" / "js"
@@ -229,10 +239,9 @@ def validate_frontend() -> tuple[bool, str]:
             for js_file in js_dir.glob("*.js"):
                 res = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
                 if res.returncode != 0:
-                    return False, f"JS Syntax Error in {js_file.name}:
-{res.stderr.strip()}"
+                    err_msg = res.stderr.strip()
+                    return False, f"JS Syntax Error in {js_file.name}: {err_msg}"
 
-    # Проверка целостности HTML (наличие script тега для app.js)
     for html_path in [REPO_DIR / "static" / "index.html", REPO_DIR / "index.html"]:
         if html_path.exists():
             html_text = html_path.read_text(encoding="utf-8")
@@ -242,20 +251,24 @@ def validate_frontend() -> tuple[bool, str]:
     return True, ""
 
 def run_tests():
-    # 1. Проверяем фронтенд перед бэкенд-тестами
     ok, err = validate_frontend()
     if not ok:
-        return False, f"Frontend validation failed:
-{err}"
+        return False, f"Frontend validation failed:\n{err}"
 
-    # 2. Проверяем pytest
     if not (REPO_DIR / "tests").exists():
         return True, "Тестов нет"
-    res = subprocess.run([sys.executable, "-m", "pytest", "-q"], cwd=REPO_DIR, capture_output=True, text=True)
+    try:
+        res = subprocess.run(
+            [sys.executable, "-m", "pytest", "-q"],
+            cwd=REPO_DIR, capture_output=True, text=True, timeout=300,
+        )
+    except subprocess.TimeoutExpired as e:
+        out = (e.stdout or "") + (e.stderr or "")
+        return False, "Тесты не уложились в 300с:\n" + out
     return res.returncode == 0, res.stdout + res.stderr
 
 def call_cptr_agent(task_text: str, error_feedback: str | None = None):
-    repo_files = get_repo_context()
+    repo_files = get_repo_context(task_text)
 
     system_prompt = (
         "Ты — ведущий full-stack инженер проекта. Твоя цель — надежная и чистая реализация функционала.\n\n"
@@ -272,10 +285,8 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         "Пропущенная строка — это стёртая строка.\n"
         "- НЕ МЕНЯЙ КОНТРАКТ: запрещено ломать существующие HTTP-статусы, пути роутов, структуру элементов DOM и ID, "
         "если этого явно не требует задача.\n"
-        "- В SQL-запросах для пустых значений используй исключительно NULL, а не Python None.\n"
         "- Явные импорты в начале каждого файла.\n"
-        "- Никаких заглушек pass или ... Только готовая реализация.\n"
-        "- Полноценные тесты."
+        "- Никаких заглушек pass или ... Только готовая реализация."
     )
 
     feedback_text = ""
@@ -286,7 +297,7 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             "сразу выводи блоки исправленных файлов целиком.\n"
         )
 
-    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 200 слов) и выведи файлы в формате === FILE: ... ==="
+    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 150 слов) и выведи файлы в формате === FILE: ... ==="
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
@@ -298,11 +309,11 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_prompt},
         ],
-        "temperature": 0.3,
-        "max_tokens": 24576,
+        "temperature": 0.2,
+        "max_tokens": MAX_PREDICT,
         "options": {
-            "num_ctx": 65536,
-            "num_predict": 49152,
+            "num_ctx": NUM_CTX,
+            "num_predict": MAX_PREDICT,
         },
     }
 
@@ -346,7 +357,11 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
-    run(["git", "pull", "--rebase", "--autostash"], check=False)
+    pull_res = run(["git", "pull", "--rebase", "--autostash"], check=False)
+    if pull_res.returncode != 0:
+        log("git pull --rebase не удался — прерываю прогон.")
+        run(["git", "rebase", "--abort"], check=False)
+        return
 
     idx, task_text = get_next_task()
     if task_text is None:
@@ -367,7 +382,7 @@ def main():
         if not result_text:
             log("Модель вернула пустой ответ (или сожгла бюджет на reasoning).")
             fmt_warning = (
-                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ — бюджет токенов ушёл на рассуждения. "
+                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ. "
                 "План — максимум 2 предложения, сразу выводи полные блоки === FILE: путь ==="
             )
             continue
