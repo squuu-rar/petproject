@@ -24,7 +24,6 @@ CPTR_ENDPOINT = _raw_ep.strip("[]()\"' \t\r\n")
 CPTR_MODEL = os.environ.get("CPTR_MODEL", "gemma-coder:latest").strip()
 CPTR_API_KEY = os.environ.get("CPTR_API_KEY", "").strip()
 
-# Лимиты токенов
 NUM_CTX = int(os.environ.get("CPTR_NUM_CTX", "65536"))
 MAX_PREDICT = int(os.environ.get("CPTR_MAX_PREDICT", "49152"))
 
@@ -35,11 +34,8 @@ IGNORED_SYSTEM_FILES = {
 }
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
-# Лимиты контекста для модели
 MAX_FILE_CONTEXT_CHARS = 20000
 MAX_TOTAL_CONTEXT_CHARS = 60000
-
-# Отслеживаемые типы файлов для фронтенда и бэкенда
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
 
 SHRINK_GUARD_RATIO = 0.6
@@ -59,20 +55,20 @@ LAZY_PATTERNS = [
 ]
 
 def log(msg: str):
-    line = f"[{datetime.now().isoformat(timespec='seconds')}] {msg}"
+    line = "[" + datetime.now().isoformat(timespec='seconds') + "] " + msg
     print(line)
     with open(LOG_FILE, "a", encoding="utf-8") as f:
         f.write(line + "\n")
 
 def run(cmd, cwd=REPO_DIR, check=True):
-    log(f"$ {' '.join(cmd)}")
+    log("$ " + " ".join(cmd))
     res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
     if res.stdout:
         log(res.stdout.strip())
     if res.stderr:
         log(res.stderr.strip())
     if check and res.returncode != 0:
-        raise RuntimeError(f"Command failed: {' '.join(cmd)}\n{res.stderr}")
+        raise RuntimeError("Command failed: " + " ".join(cmd) + "\n" + res.stderr)
     return res
 
 def rollback():
@@ -97,8 +93,8 @@ def mark_task_done(index):
 
 def get_repo_context(task_text: str = "") -> str:
     task_lower = task_text.lower()
-    is_frontend_task = any(task_lower.startswith(f"- [ ] {x}") or f"{x}:" in task_lower for x in ["frontend", "ui", "css", "html"])
-    is_backend_task = any(task_lower.startswith(f"- [ ] {x}") or f"{x}:" in task_lower for x in ["api", "db", "cache", "providers", "scanner", "history", "wave", "auth"])
+    is_frontend_task = any(task_lower.startswith("- [ ] " + x) or (x + ":") in task_lower for x in ["frontend", "ui", "css", "html"])
+    is_backend_task = any(task_lower.startswith("- [ ] " + x) or (x + ":") in task_lower for x in ["api", "db", "cache", "providers", "scanner", "history", "wave", "auth"])
 
     all_files = set()
     for pattern in CONTEXT_GLOBS:
@@ -109,14 +105,12 @@ def get_repo_context(task_text: str = "") -> str:
         rel = p.relative_to(REPO_DIR)
         if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
-        # Если задача бэкендовая — убираем фронтенд, если фронтендовая — убираем бэкенд
         if is_frontend_task and p.suffix == ".py":
             continue
         if is_backend_task and p.suffix in (".js", ".html", ".css"):
             continue
         candidates.append(p)
 
-    # Ищем слова от 2 символов, чтобы ловить 'db', 'ui', 'api', 'id'
     keywords = set(re.findall(r"[a-zA-Zа-яА-Я_]{2,}", task_lower)) if task_text else set()
     if is_backend_task:
         keywords.add("db")
@@ -124,7 +118,6 @@ def get_repo_context(task_text: str = "") -> str:
     def sort_key(p: Path):
         rel_str = str(p.relative_to(REPO_DIR)).lower()
         relevance = sum(1 for kw in keywords if kw in rel_str)
-        # db.py и файлы с роутами всегда в топе для бэкенда
         if is_backend_task and rel_str in ("db.py", "main.py", "app.py"):
             relevance += 10
         return (-relevance, -p.stat().st_mtime)
@@ -134,12 +127,13 @@ def get_repo_context(task_text: str = "") -> str:
     included = []
     skipped = []
     total_chars = 0
+    trunc_notice = "\n... (файл обрезан по лимиту) ...\n"
+
     for p in candidates:
         rel = p.relative_to(REPO_DIR)
         text = p.read_text(encoding="utf-8", errors="ignore")
         if len(text) > MAX_FILE_CONTEXT_CHARS:
-            text = text[:MAX_FILE_CONTEXT_CHARS] + f"
-... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
+            text = text[:MAX_FILE_CONTEXT_CHARS] + trunc_notice
         if total_chars + len(text) > MAX_TOTAL_CONTEXT_CHARS:
             skipped.append(str(rel))
             continue
@@ -147,14 +141,14 @@ def get_repo_context(task_text: str = "") -> str:
         included.append((rel, text))
 
     if skipped:
-        log(f"В контекст НЕ попали (исчерпан общий бюджет): {', '.join(skipped)}")
-    log(f"Контекст репозитория: {len(included)} файлов, {total_chars} симв. (бюджет {MAX_TOTAL_CONTEXT_CHARS})")
+        log("В контекст НЕ попали (исчерпан общий бюджет): " + ", ".join(skipped))
+    log("Контекст репозитория: " + str(len(included)) + " файлов, " + str(total_chars) + " симв. (бюджет " + str(MAX_TOTAL_CONTEXT_CHARS) + ")")
 
     included.sort(key=lambda pair: str(pair[0]))
-    return "
-
-".join(f"--- Файл: {rel} ---
-{text}" for rel, text in included)
+    chunks = []
+    for rel, text in included:
+        chunks.append("--- Файл: " + str(rel) + " ---\n" + text)
+    return "\n\n".join(chunks)
 
 def sanitize_code(code: str) -> str:
     lines = code.strip().splitlines()
@@ -168,25 +162,25 @@ def validate_code_syntax(rel_path: str, code: str) -> tuple[bool, str | None]:
     code_lower = code.lower()
     for pattern in LAZY_PATTERNS:
         if pattern in code_lower:
-            return False, f"Обнаружен плейсхолдер пропуска кода ({pattern}). Выведи файл полностью без сокращений!"
+            return False, "Обнаружен плейсхолдер пропуска кода (" + pattern + "). Выведи файл полностью!"
 
     if rel_path.endswith(".py"):
         try:
             ast.parse(code)
         except SyntaxError as e:
-            return False, f"Синтаксическая ошибка AST Python в {rel_path} на строке {e.lineno}: {e.msg}"
+            return False, "Синтаксическая ошибка AST Python в " + rel_path + " на строке " + str(e.lineno) + ": " + str(e.msg)
 
     if rel_path.endswith(".js") and shutil.which("node"):
         res = subprocess.run(["node", "--check", "-"], input=code, text=True, capture_output=True)
         if res.returncode != 0:
             err_line = res.stderr.strip().splitlines()[-1] if res.stderr.strip() else "Syntax error"
-            return False, f"Синтаксическая ошибка JavaScript в {rel_path}: {err_line}"
+            return False, "Синтаксическая ошибка JavaScript в " + rel_path + ": " + err_line
 
     if rel_path.endswith(".json"):
         try:
             json.loads(code)
         except Exception as e:
-            return False, f"Ошибка синтаксиса JSON в {rel_path}: {e}"
+            return False, "Ошибка синтаксиса JSON в " + rel_path + ": " + str(e)
 
     return True, None
 
@@ -210,7 +204,7 @@ def apply_files_from_response(content: str):
         try:
             target.relative_to(REPO_DIR)
         except ValueError:
-            return False, f"Защита пути: путь вне репозитория отклонён ({rel_path})"
+            return False, "Защита пути: путь вне репозитория отклонён: " + rel_path
 
         valid, err = validate_code_syntax(rel_path, file_code)
         if not valid:
@@ -220,17 +214,14 @@ def apply_files_from_response(content: str):
             old_len = len(target.read_text(encoding="utf-8", errors="ignore"))
             new_len = len(file_code)
             if old_len > MIN_OLD_LEN_FOR_SHRINK_CHECK and new_len < old_len * SHRINK_GUARD_RATIO:
-                return False, (
-                    f"Подозрительная потеря объёма в {rel_path}: было {old_len} симв., "
-                    f"стало {new_len}. Файл выведен не полностью — выведи весь файл целиком."
-                )
+                return False, "Подозрительная потеря объёма в " + rel_path + ": было " + str(old_len) + ", стало " + str(new_len)
 
         staged.append((target, rel_path, file_code))
 
     for target, rel_path, file_code in staged:
         target.parent.mkdir(parents=True, exist_ok=True)
         target.write_text(file_code + "\n", encoding="utf-8")
-        log(f"Обновлен файл: {rel_path}")
+        log("Обновлен файл: " + rel_path)
 
     return True, None
 
@@ -256,20 +247,20 @@ def validate_frontend() -> tuple[bool, str]:
                 res = subprocess.run([node_bin, "--check", str(js_file)], capture_output=True, text=True)
                 if res.returncode != 0:
                     err_msg = res.stderr.strip()
-                    return False, f"JS Syntax Error in {js_file.name}: {err_msg}"
+                    return False, "JS Syntax Error in " + js_file.name + ": " + err_msg
 
     for html_path in [REPO_DIR / "static" / "index.html", REPO_DIR / "index.html"]:
         if html_path.exists():
             html_text = html_path.read_text(encoding="utf-8")
             if "app.js" not in html_text or "<script" not in html_text:
-                return False, f"HTML Error: {html_path.name} is missing <script> tag for app.js"
+                return False, "HTML Error: " + html_path.name + " is missing <script> tag for app.js"
 
     return True, ""
 
 def run_tests():
     ok, err = validate_frontend()
     if not ok:
-        return False, f"Frontend validation failed:\n{err}"
+        return False, "Frontend validation failed:\n" + err
 
     if not (REPO_DIR / "tests").exists():
         return True, "Тестов нет"
@@ -296,28 +287,33 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         "=== END FILE ===\n\n"
         "Требования:\n"
         "- МИНИМАЛЬНЫЙ ДИФФ: выводи блоки === FILE: ... === ТОЛЬКО для файлов, которые ты создаешь или модифицируешь.\n"
-        "- ПОЛНАЯ ПЕРЕЗАПИСЬ ФАЙЛА: каждый блок заменяет файл на диске целиком. "
-        "КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать комментарии в духе '/* rest of code */' или '// ... existing code'. "
-        "Пропущенная строка — это стёртая строка.\n"
-        "- НЕ МЕНЯЙ КОНТРАКТ: запрещено ломать существующие HTTP-статусы, пути роутов, структуру элементов DOM и ID, "
-        "если этого явно не требует задача.\n"
+        "- ПОЛНАЯ ПЕРЕЗАПИСЬ ФАЙЛА: каждый блок заменяет файл на диске целиком.\n"
+        "- КАТЕГОРИЧЕСКИ ЗАПРЕЩЕНО писать комментарии в духе '/* rest of code */' или '// ... existing code'.\n"
+        "- НЕ МЕНЯЙ КОНТРАКТ: запрещено ломать существующие HTTP-статусы, пути роутов, структуру элементов DOM и ID.\n"
         "- Явные импорты в начале каждого файла.\n"
-        "- Никаких заглушек pass или ... Только готовая реализация."
+        "- Никаких заглушек pass или ... Только готовая реализация.\n"
+        "- Полноценные тесты."
     )
 
     feedback_text = ""
     if error_feedback:
         feedback_text = (
-            f"\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ:\n{error_feedback}\n"
-            "ВНИМАНИЕ: исправь точечно указанную проблему. План — максимум 2 предложения, "
-            "сразу выводи блоки исправленных файлов целиком.\n"
+            "\nПРЕДЫДУЩАЯ ПОПЫТКА УПАЛА С ОШИБКОЙ:\n"
+            + error_feedback
+            + "\nВНИМАНИЕ: исправь точечно указанную проблему. План — максимум 2 предложения, "
+            + "сразу выводи блоки исправленных файлов целиком.\n"
         )
 
-    user_prompt = f"Задача: {task_text}\n{feedback_text}\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n{repo_files}\n\nСоставь краткий план (до 150 слов) и выведи файлы в формате === FILE: ... ==="
+    user_prompt = (
+        "Задача: " + task_text + "\n"
+        + feedback_text
+        + "\nТЕКУЩИЙ КОД РЕПОЗИТОРИЯ:\n" + repo_files
+        + "\n\nСоставь краткий план (до 200 слов) и выведи файлы в формате === FILE: ... ==="
+    )
 
     headers = {"Content-Type": "application/json"}
     if CPTR_API_KEY:
-        headers["Authorization"] = f"Bearer {CPTR_API_KEY}"
+        headers["Authorization"] = "Bearer " + CPTR_API_KEY
 
     payload = {
         "model": CPTR_MODEL,
@@ -333,14 +329,14 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
         },
     }
 
-    log(f"Отправка запроса в Ollama ({CPTR_MODEL})...")
+    log("Отправка запроса в Ollama (" + CPTR_MODEL + ")...")
     resp = requests.post(CPTR_ENDPOINT, headers=headers, json=payload, timeout=(15, 2400))
     resp.raise_for_status()
     data = resp.json()
 
     choices = data.get("choices", [])
     if not choices:
-        log(f"Пустой ответ API: {data}")
+        log("Пустой ответ API: " + str(data))
         return ""
 
     choice = choices[0]
@@ -358,12 +354,12 @@ def call_cptr_agent(task_text: str, error_feedback: str | None = None):
     if not content.strip() and isinstance(message.get("text"), str):
         content = message["text"]
 
-    log(f"Ollama ответ (finish_reason={finish_reason}): content={len(content)} симв., reasoning={len(reasoning)} симв.")
+    log("Ollama ответ (finish_reason=" + str(finish_reason) + "): content=" + str(len(content)) + " симв., reasoning=" + str(len(reasoning)) + " симв.")
 
     if reasoning.strip():
         log("--- Ход мыслей модели (Reasoning) ---")
         for r_line in reasoning.strip().splitlines()[:15]:
-            log(f"CoT: {r_line}")
+            log("CoT: " + r_line)
 
     if not content.strip() and len(reasoning) > 2000:
         log("Похоже на reasoning-loop: контент пуст, весь бюджет ушёл на CoT.")
@@ -375,7 +371,7 @@ def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
     pull_res = run(["git", "pull", "--rebase", "--autostash"], check=False)
     if pull_res.returncode != 0:
-        log("git pull --rebase не удался — прерываю прогон.")
+        log("git pull --rebase не удался — прерываю прогон, чтобы не работать поверх сломанного дерева.")
         run(["git", "rebase", "--abort"], check=False)
         return
 
@@ -384,13 +380,13 @@ def main():
         log("Все задачи в TASKS.md выполнены.")
         return
 
-    log(f"Начало работы над задачей: {task_text}")
+    log("Начало работы над задачей: " + task_text)
     last_test_error = None
     fmt_warning = ""
     task_passed = False
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
-        log(f"--- Попытка {attempt} из {MAX_ATTEMPTS} ---")
+        log("--- Попытка " + str(attempt) + " из " + str(MAX_ATTEMPTS) + " ---")
         feedback = (fmt_warning + ("\n" + last_test_error if last_test_error else "")).strip() or None
         result_text = call_cptr_agent(task_text, error_feedback=feedback)
         fmt_warning = ""
@@ -398,28 +394,28 @@ def main():
         if not result_text:
             log("Модель вернула пустой ответ (или сожгла бюджет на reasoning).")
             fmt_warning = (
-                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ. "
+                "ПРЕДЫДУЩИЙ ОТВЕТ БЫЛ ПУСТЫМ — бюджет токенов ушёл на рассуждения. "
                 "План — максимум 2 предложения, сразу выводи полные блоки === FILE: путь ==="
             )
             continue
 
         applied, parse_err = apply_files_from_response(result_text)
         if not applied:
-            log(f"Не удалось применить изменения: {parse_err}")
-            fmt_warning = f"ОШИБКА ПРИ ПРИМЕНЕНИИ ФАЙЛОВ: {parse_err}. Исправь ошибку и выведи файлы заново!"
+            log("Не удалось применить изменения: " + str(parse_err))
+            fmt_warning = "ОШИБКА ПРИ ПРИМЕНЕНИИ ФАЙЛОВ: " + str(parse_err) + ". Исправь ошибку и выведи файлы заново!"
             continue
 
         ok, test_out = run_tests()
         if ok:
-            log(f"Тесты успешно пройдены на попытке {attempt}!")
+            log("Тесты успешно пройдены на попытке " + str(attempt) + "!")
             task_passed = True
             break
 
-        log(f"Тесты провалились на попытке {attempt}:\n{test_out}")
+        log("Тесты провалились на попытке " + str(attempt) + ":\n" + str(test_out))
         last_test_error = test_out
 
     if not task_passed:
-        log(f"Задача не решена за {MAX_ATTEMPTS} попыток. Откат изменений.")
+        log("Задача не решена за " + str(MAX_ATTEMPTS) + " попыток. Откат изменений.")
         rollback()
         return
 
@@ -431,7 +427,7 @@ def main():
 
     mark_task_done(idx)
     run(["git", "add", "TASKS.md"])
-    run(["git", "commit", "-m", f"auto: {task_text[:70]}"])
+    run(["git", "commit", "-m", "auto: " + task_text[:70]])
     run(["git", "push"])
     log("Успешно закоммичено и отправлено в репозиторий.")
 
@@ -439,6 +435,6 @@ if __name__ == "__main__":
     try:
         main()
     except Exception as e:
-        log(f"Критическая ошибка: {e}")
+        log("Критическая ошибка: " + str(e))
         rollback()
         sys.exit(1)
