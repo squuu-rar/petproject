@@ -35,7 +35,7 @@ IGNORED_SYSTEM_FILES = {
 IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv"}
 
 MAX_FILE_CONTEXT_CHARS = 20000
-MAX_TOTAL_CONTEXT_CHARS = 60000
+MAX_TOTAL_CONTEXT_CHARS = 90000
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
 
 SHRINK_GUARD_RATIO = 0.6
