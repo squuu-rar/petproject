@@ -96,7 +96,10 @@ def mark_task_done(index):
     TASKS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
 
 def get_repo_context(task_text: str = "") -> str:
-    is_frontend_task = "frontend:" in task_text.lower()
+    task_lower = task_text.lower()
+    is_frontend_task = any(task_lower.startswith(f"- [ ] {x}") or f"{x}:" in task_lower for x in ["frontend", "ui", "css", "html"])
+    is_backend_task = any(task_lower.startswith(f"- [ ] {x}") or f"{x}:" in task_lower for x in ["api", "db", "cache", "providers", "scanner", "history", "wave", "auth"])
+
     all_files = set()
     for pattern in CONTEXT_GLOBS:
         all_files.update(REPO_DIR.rglob(pattern))
@@ -106,15 +109,24 @@ def get_repo_context(task_text: str = "") -> str:
         rel = p.relative_to(REPO_DIR)
         if rel.name in IGNORED_SYSTEM_FILES or any(part.startswith(".") or part in IGNORED_DIRS for part in rel.parts):
             continue
+        # Если задача бэкендовая — убираем фронтенд, если фронтендовая — убираем бэкенд
         if is_frontend_task and p.suffix == ".py":
+            continue
+        if is_backend_task and p.suffix in (".js", ".html", ".css"):
             continue
         candidates.append(p)
 
-    keywords = set(re.findall(r"[a-zA-Zа-яА-Я_]{3,}", task_text.lower())) if task_text else set()
+    # Ищем слова от 2 символов, чтобы ловить 'db', 'ui', 'api', 'id'
+    keywords = set(re.findall(r"[a-zA-Zа-яА-Я_]{2,}", task_lower)) if task_text else set()
+    if is_backend_task:
+        keywords.add("db")
 
     def sort_key(p: Path):
         rel_str = str(p.relative_to(REPO_DIR)).lower()
         relevance = sum(1 for kw in keywords if kw in rel_str)
+        # db.py и файлы с роутами всегда в топе для бэкенда
+        if is_backend_task and rel_str in ("db.py", "main.py", "app.py"):
+            relevance += 10
         return (-relevance, -p.stat().st_mtime)
 
     candidates.sort(key=sort_key)
@@ -126,7 +138,8 @@ def get_repo_context(task_text: str = "") -> str:
         rel = p.relative_to(REPO_DIR)
         text = p.read_text(encoding="utf-8", errors="ignore")
         if len(text) > MAX_FILE_CONTEXT_CHARS:
-            text = text[:MAX_FILE_CONTEXT_CHARS] + f"\n... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
+            text = text[:MAX_FILE_CONTEXT_CHARS] + f"
+... (обрезано, файл больше {MAX_FILE_CONTEXT_CHARS} симв.) ..."
         if total_chars + len(text) > MAX_TOTAL_CONTEXT_CHARS:
             skipped.append(str(rel))
             continue
@@ -138,7 +151,10 @@ def get_repo_context(task_text: str = "") -> str:
     log(f"Контекст репозитория: {len(included)} файлов, {total_chars} симв. (бюджет {MAX_TOTAL_CONTEXT_CHARS})")
 
     included.sort(key=lambda pair: str(pair[0]))
-    return "\n\n".join(f"--- Файл: {rel} ---\n{text}" for rel, text in included)
+    return "
+
+".join(f"--- Файл: {rel} ---
+{text}" for rel, text in included)
 
 def sanitize_code(code: str) -> str:
     lines = code.strip().splitlines()
