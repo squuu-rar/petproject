@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import init_db, get_track_by_id
+from db import init_db, get_track_by_id, get_tracks_paginated
 from schemas import TrackRead
 from search_service import (
     SearchOrchestrator, 
@@ -60,8 +60,16 @@ def list_tracks(
     order: str = Query("asc", pattern="^(asc|desc)$"),
     source: Optional[str] = Query(None, pattern="^(local|remote)$")
 ):
-    from db import get_tracks_paginated
-    return get_tracks_paginated(limit, offset, sort_by, order, source)
+    return get_tracks_paginated(limit, offset, sort_by, order, source=source)
+
+@app.get("/favorites", response_model=list[TrackRead])
+def list_favorites(
+    limit: int = Query(20, ge=1, le=100),
+    offset: int = Query(0, ge=0),
+    sort_by: str = Query("id"),
+    order: str = Query("asc", pattern="^(asc|desc)$")
+):
+    return get_tracks_paginated(limit, offset, sort_by, order, liked=True)
 
 @app.get("/search", response_model=list[TrackRead])
 def search_tracks(

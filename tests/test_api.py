@@ -18,16 +18,16 @@ def setup_test_db(tmp_path, monkeypatch):
     conn = db.get_db()
     cur = conn.cursor()
     tracks = [
-        (1, "path1", "Song 1", "Artist A", "Album A", "Rock", 2020, 1, 180.0, None, "local", None, None),
-        (2, "path2", "Song 2", "Artist B", "Album B", "Pop", 2021, 2, 200.0, None, "local", None, None),
-        (3, "path3", "Song 3", "Artist C", "Album C", "Jazz", 2022, 3, 210.0, None, "remote", "vid1", None),
-        (4, "path4", "Song 4", "Artist D", "Album D", "Rock", 2023, 4, 220.0, None, "local", None, None),
+        (1, "path1", "Song 1", "Artist A", "Album A", "Rock", 2020, 1, 180.0, None, "local", None, None, 0),
+        (2, "path2", "Song 2", "Artist B", "Album B", "Pop", 2021, 2, 200.0, None, "local", None, None, 1),
+        (3, "path3", "Song 3", "Artist C", "Album C", "Jazz", 2022, 3, 210.0, None, "remote", "vid1", None, 1),
+        (4, "path4", "Song 4", "Artist D", "Album D", "Rock", 2023, 4, 220.0, None, "local", None, None, 0),
     ]
     for t in tracks:
         cur.execute("""
             INSERT OR IGNORE INTO tracks 
-            (id, path, title, artist, album, genre, year, track_number, duration, cover_path, source, external_id, cache_path)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            (id, path, title, artist, album, genre, year, track_number, duration, cover_path, source, external_id, cache_path, liked)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         """, t)
     conn.commit()
     conn.close()
@@ -72,6 +72,28 @@ def test_get_tracks_empty_results(setup_test_db):
     assert response.status_code == 200
     assert response.json() == []
 
+def test_get_favorites_success(setup_test_db):
+    # In setup_test_db: Song 2 (local) and Song 3 (remote) are liked
+    response = client.get("/favorites")
+    assert response.status_code == 200
+    data = response.json()
+    assert len(data) == 2
+    titles = [t["title"] for t in data]
+    assert "Song 2" in titles
+    assert "Song 3" in titles
+    assert "Song 1" not in titles
+
+def test_get_favorites_empty(setup_test_db):
+    # Clear all likes
+    conn = db.get_db()
+    conn.execute("UPDATE tracks SET liked = 0")
+    conn.commit()
+    conn.close()
+    
+    response = client.get("/favorites")
+    assert response.status_code == 200
+    assert response.json() == []
+
 def test_get_stream_local_success(setup_test_db, tmp_path):
     # Create a real dummy file
     dummy_file = tmp_path / "test_audio.mp3"
@@ -85,7 +107,6 @@ def test_get_stream_local_success(setup_test_db, tmp_path):
 
     response = client.get("/stream/1")
     assert response.status_code == 200
-    # Check if it's a file response (content-type for text/plain is fine for dummy)
     assert response.headers["content-type"] != "application/json"
 
 def test_get_stream_local_not_found(setup_test_db):

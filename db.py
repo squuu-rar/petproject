@@ -96,7 +96,8 @@ def get_tracks_paginated(
     offset: int,
     sort_by: str,
     order: str,
-    source: Optional[str] = None
+    source: Optional[str] = None,
+    liked: Optional[bool] = None
 ) -> List[Dict[str, Any]]:
     allowed_columns = {
         "id", "title", "artist", "album", "genre", 
@@ -109,10 +110,18 @@ def get_tracks_paginated(
     
     query = "SELECT * FROM tracks"
     params = []
+    conditions = []
 
     if source:
-        query += " WHERE source = ?"
+        conditions.append("source = ?")
         params.append(source)
+    
+    if liked is not None:
+        conditions.append("liked = ?")
+        params.append(1 if liked else 0)
+
+    if conditions:
+        query += " WHERE " + " AND ".join(conditions)
 
     query += f" ORDER BY {sort_by} {order_sql} LIMIT ? OFFSET ?"
     params.extend([limit, offset])
