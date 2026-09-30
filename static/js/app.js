@@ -13,6 +13,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const playerCover = document.getElementById('player-cover');
     const btnPlay = document.getElementById('btn-play');
     const btnNext = document.getElementById('btn-next');
+    const btnPrev = document.getElementById('btn-prev');
     const btnLikePlayer = document.getElementById('btn-like-player');
     const progressFill = document.getElementById('progress-fill');
     const progressContainer = document.querySelector('.progress-bar');
@@ -21,7 +22,21 @@ document.addEventListener('DOMContentLoaded', () => {
     
     const btnMute = document.getElementById('btn-mute');
     const volumeRange = document.getElementById('volume-range');
-    const volumeIcon = btnMute.querySelector('i');
+    const volumeIcon = btnMute ? btnMute.querySelector('i') : null;
+
+    // Lyrics Elements
+    const lyricsOverlay = document.getElementById('lyrics-overlay');
+    const btnCloseLyrics = document.getElementById('btn-close-lyrics');
+    const playerInfo = document.querySelector('.player-info');
+    const lyricsCover = document.getElementById('lyrics-cover');
+    const lyricsTitle = document.getElementById('lyrics-title');
+    const lyricsArtist = document.getElementById('lyrics-artist');
+    const lyricsLines = document.getElementById('lyrics-lines');
+    const lyricsScrollContainer = document.getElementById('lyrics-scroll-container');
+    const lyricsProgressFill = document.getElementById('lyrics-progress-fill');
+    const lyricsProgressContainer = document.getElementById('lyrics-progress-container');
+    const lyricsTimeCurrent = document.getElementById('lyrics-time-current');
+    const lyricsTimeTotal = document.getElementById('lyrics-time-total');
 
     // --- State ---
     const playbackQueue = new PlaybackQueue();
@@ -30,6 +45,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let isDragging = false;
     let lastSearchResults = [];
     let lastSearchQuery = '';
+    let parsedLyrics = [];
 
     // --- Utilities ---
 
@@ -69,6 +85,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return await response.json();
     }
 
+    async function fetchFavorites() {
+        const response = await fetch('/favorites');
+        if (!response.ok) throw new Error('Failed to fetch favorites');
+        return await response.json();
+    }
+
     async function searchTracks(query) {
         const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
         if (!response.ok) throw new Error('Search failed');
@@ -81,6 +103,101 @@ document.addEventListener('DOMContentLoaded', () => {
         });
         if (!response.ok) throw new Error('Failed to toggle like');
         return await response.json();
+    }
+
+    // --- Lyrics Logic ---
+
+    function parseLRC(text) {
+        if (!text) return [];
+        const lines = text.split('\n');
+        const result = [];
+        const timeRegex = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+
+        lines.forEach(line => {
+            const matches = [...line.matchAll(timeRegex)];
+            if (matches.length > 0) {
+                const textOnly = line.replace(timeRegex, '').trim();
+                matches.forEach(match => {
+                    const minutes = parseInt(match[1], 10);
+                    const seconds = parseInt(match[2], 10);
+                    const ms = match[3] ? (match[3].length === 2 ? parseInt(match[3], 10) * 10 : parseInt(match[3], 10)) : 0;
+                    const time = minutes * 60 + seconds + ms / 1000;
+                    result.push({ time, text: textOnly });
+                });
+            }
+        });
+
+        result.sort((a, b) => a.time - b.time);
+        return result;
+    }
+
+    async function loadLyrics(trackId) {
+        if (!lyricsLines) return;
+        lyricsLines.innerHTML = '<p class="lyrics-status"><i class="fas fa-spinner fa-spin"></i> Загрузка текста...</p>';
+        parsedLyrics = [];
+
+        try {
+            const response = await fetch(`/tracks/${trackId}/lyrics`);
+            if (!response.ok) throw new Error('No lyrics');
+            const data = await response.json();
+            if (data.lyrics) {
+                parsedLyrics = parseLRC(data.lyrics);
+                if (parsedLyrics.length > 0) {
+                    renderParsedLyrics(parsedLyrics);
+                    return;
+                }
+            }
+            lyricsLines.innerHTML = '<p class="lyrics-status">Текст для этого трека отсутствует</p>';
+        } catch (err) {
+            lyricsLines.innerHTML = '<p class="lyrics-status">Текст для этого трека отсутствует</p>';
+        }
+    }
+
+    function renderParsedLyrics(lyrics) {
+        if (!lyricsLines) return;
+        lyricsLines.innerHTML = '';
+        lyrics.forEach((line, idx) => {
+            const p = document.createElement('p');
+            p.className = 'lyrics-line';
+            p.textContent = line.text || '♪';
+            p.dataset.index = idx;
+            p.dataset.time = line.time;
+            p.addEventListener('click', () => {
+                audioPlayer.currentTime = line.time;
+            });
+            lyricsLines.appendChild(p);
+        });
+    }
+
+    function updateActiveLyricsLine(currentTime) {
+        if (!parsedLyrics.length || !lyricsLines) return;
+        let activeIdx = -1;
+        for (let i = 0; i < parsedLyrics.length; i++) {
+            if (currentTime >= parsedLyrics[i].time) {
+                activeIdx = i;
+            } else {
+                break;
+            }
+        }
+
+        const lines = lyricsLines.querySelectorAll('.lyrics-line');
+        lines.forEach((el, idx) => {
+            if (idx === activeIdx) {
+                if (!el.classList.contains('active')) {
+                    el.classList.add('active');
+                    if (lyricsScrollContainer) {
+                        const offsetTop = el.offsetTop;
+                        const containerHeight = lyricsScrollContainer.clientHeight;
+                        lyricsScrollContainer.scrollTo({
+                            top: offsetTop - containerHeight / 2 + el.clientHeight / 2,
+                            behavior: 'smooth'
+                        });
+                    }
+                }
+            } else {
+                el.classList.remove('active');
+            }
+        });
     }
 
     // --- UI Rendering ---
@@ -129,6 +246,8 @@ document.addEventListener('DOMContentLoaded', () => {
                 el.classList.add('active');
                 if (!audioPlayer.paused) {
                     el.classList.add('playing');
+                } else {
+                    el.classList.remove('playing');
                 }
             } else {
                 el.classList.remove('active', 'playing');
@@ -138,7 +257,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderTracklist(tracks) {
         tracklist.innerHTML = '';
-        if (tracks.length === 0) {
+        if (!tracks || tracks.length === 0) {
             tracklist.innerHTML = '<div class="status-message">No tracks found</div>';
             return;
         }
@@ -152,7 +271,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     function renderSearchResults(results) {
         tracklist.innerHTML = '';
-        if (results.length === 0) {
+        if (!results || results.length === 0) {
             tracklist.innerHTML = '<div class="status-message">Ничего не найдено</div>';
             return;
         }
@@ -222,18 +341,26 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         }
 
-        document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active'));
+        document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active', 'playing'));
         const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
-        if (activeEl) activeEl.classList.add('active');
+        if (activeEl) activeEl.classList.add('active', 'playing');
 
         playerTitle.textContent = track.title || 'Unknown Title';
         playerArtist.textContent = track.artist || 'Unknown Artist';
         playerCover.src = track.cover_path || '/static/img/default-cover.png';
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
 
+        if (lyricsCover) lyricsCover.src = track.cover_path || '/static/img/default-cover.png';
+        if (lyricsTitle) lyricsTitle.textContent = track.title || 'Unknown Title';
+        if (lyricsArtist) lyricsArtist.textContent = track.artist || 'Unknown Artist';
+
         audioPlayer.src = `/stream/${track.id}`;
         audioPlayer.play().catch(e => console.log("Play interrupted:", e));
         btnPlay.querySelector('i').className = 'fas fa-pause-circle';
+
+        if (track.id && track.id !== -1 && track.id !== '-1') {
+            loadLyrics(track.id);
+        }
     }
 
     function togglePlay() {
@@ -263,6 +390,7 @@ document.addEventListener('DOMContentLoaded', () => {
     // --- Volume & Mute Logic ---
 
     function updateMuteIcon(isMuted) {
+        if (!volumeIcon) return;
         if (isMuted) {
             volumeIcon.className = 'fas fa-volume-mute';
         } else if (audioPlayer.volume < 0.5) {
@@ -276,299 +404,10 @@ document.addEventListener('DOMContentLoaded', () => {
         const vol = localStorage.getItem('player:volume') ?? 70;
         const muted = localStorage.getItem('player:muted') === 'true';
         
-        volumeRange.value = vol;
+        if (volumeRange) volumeRange.value = vol;
         audioPlayer.volume = vol / 100;
         audioPlayer.muted = muted;
         updateMuteIcon(muted);
     }
 
-    function saveVolumeSettings() {
-        localStorage.setItem('player:volume', volumeRange.value);
-        localStorage.setItem('player:muted', audioPlayer.muted);
-    }
-
-    // --- Event Listeners ---
-
-    const handleSearch = debounce(async (query) => {
-        lastSearchQuery = query;
-        if (!query) {
-            lastSearchResults = [];
-            viewTitle.textContent = "Your Library";
-            currentView = 'library';
-            document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.view === 'library'));
-            fetchTracks().then(tracks => {
-                renderTracklist(tracks);
-                currentlyPlayingTrack = playbackQueue.getCurrentTrack();
-            });
-            return;
-        }
-
-        currentView = 'search';
-        document.querySelectorAll('.nav-item').forEach(i => i.classList.toggle('active', i.dataset.view === 'search'));
-
-        viewTitle.textContent = `Results for "${query}"`;
-        tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Searching...</div>';
-        
-        try {
-            const results = await searchTracks(query);
-            lastSearchResults = results;
-            renderSearchResults(results);
-            currentlyPlayingTrack = playbackQueue.getCurrentTrack();
-        } catch (err) {
-            console.error(err);
-            tracklist.innerHTML = '<div class="status-message">Search error occurred</div>';
-        }
-    }, 300);
-
-    searchInput.addEventListener('input', (e) => {
-        handleSearch(e.target.value.trim());
-    });
-
-    document.querySelectorAll('.nav-item').forEach(item => {
-        item.addEventListener('click', (e) => {
-            e.preventDefault();
-            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
-            item.classList.add('active');
-            
-            currentView = item.dataset.view;
-            viewTitle.textContent = item.querySelector('span').textContent;
-            
-            if (currentView === 'library') {
-                fetchTracks().then(tracks => {
-                    renderTracklist(tracks);
-                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
-                });
-            } else if (currentView === 'liked') {
-                fetchTracks({source: 'local'}).then(tracks => {
-                    const likedTracks = tracks.filter(t => t.liked);
-                    renderTracklist(likedTracks);
-                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
-                });
-            } else if (currentView === 'search') {
-                if (lastSearchResults.length > 0) {
-                    viewTitle.textContent = `Results for "${lastSearchQuery}"`;
-                    searchInput.value = lastSearchQuery;
-                    renderSearchResults(lastSearchResults);
-                    currentlyPlayingTrack = playbackQueue.getCurrentTrack();
-                } else {
-                    viewTitle.textContent = "Search";
-                    tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска выше</div>';
-                    searchInput.focus();
-                }
-            }
-        });
-    });
-
-    btnPlay.addEventListener('click', togglePlay);
-    btnNext.addEventListener('click', nextTrack);
-    audioPlayer.addEventListener('ended', nextTrack);
-    btnPrev.addEventListener('click', prevTrack);
-
-    // --- Optimistic Like Logic ---
-
-    tracklist.addEventListener('click', async (e) => {
-        const likeBtn = e.target.closest('.like-btn');
-        if (!likeBtn || !likeBtn.dataset.id) return;
-
-        const trackId = parseInt(likeBtn.dataset.id);
-        const wasLiked = likeBtn.dataset.liked === 'true';
-        const newLiked = !wasLiked;
-
-        // Optimistic Update
-        likeBtn.dataset.liked = newLiked;
-        likeBtn.querySelector('i').className = newLiked ? 'fas fa-heart' : 'far fa-heart';
-
-        try {
-            await toggleLike(trackId, wasLiked);
-            
-            // Reconcile state
-            const track = playbackQueue.queue.find(t => t.id === trackId);
-            if (track) track.liked = newLiked;
-            
-            if (currentlyPlayingTrack && currentlyPlayingTrack.id === trackId) {
-                currentlyPlayingTrack.liked = newLiked;
-                btnLikePlayer.querySelector('i').className = newLiked ? 'fas fa-heart' : 'far fa-heart';
-            }
-        } catch (err) {
-            // Rollback
-            likeBtn.dataset.liked = wasLiked;
-            likeBtn.querySelector('i').className = wasLiked ? 'fas fa-heart' : 'far fa-heart';
-        }
-    });
-
-    btnLikePlayer.addEventListener('click', async (e) => {
-        if (e) e.stopPropagation();
-        const track = currentlyPlayingTrack || (playbackQueue.index !== -1 ? playbackQueue.queue[playbackQueue.index] : null);
-        if (!track || !track.id || track.id === -1 || track.id === '-1') return;
-
-        const wasLiked = track.liked;
-        const newLiked = !wasLiked;
-
-        // Optimistic Update
-        track.liked = newLiked;
-        btnLikePlayer.querySelector('i').className = newLiked ? 'fas fa-heart' : 'far fa-heart';
-
-        try {
-            await toggleLike(track.id, wasLiked);
-        } catch (err) {
-            // Rollback
-            track.liked = wasLiked;
-            btnLikePlayer.querySelector('i').className = wasLiked ? 'fas fa-heart' : 'far fa-heart';
-        }
-
-        // Sync tracklist item
-        const activeItem = tracklist.querySelector(`.track-item[data-id="${track.id}"]`);
-        if (activeItem) {
-            const likeBtn = activeItem.querySelector('.like-btn');
-            if (likeBtn) {
-                likeBtn.dataset.liked = track.liked;
-                likeBtn.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
-            }
-        }
-    });
-
-    // --- Progress Bar Logic ---
-
-    function updateProgress() {
-        if (audioPlayer.duration) {
-            const percent = (audioPlayer.currentTime / audioPlayer.duration) * 100;
-            progressFill.style.width = `${percent}%`;
-            timeCurrent.textContent = formatTime(audioPlayer.currentTime);
-            timeTotal.textContent = formatTime(audioPlayer.duration);
-        }
-    }
-
-    function seek(e) {
-        const rect = progressContainer.getBoundingClientRect();
-        const pos = (e.clientX - rect.left) / rect.width;
-        const newTime = pos * audioPlayer.duration;
-        audioPlayer.currentTime = newTime;
-    }
-
-    audioPlayer.addEventListener('timeupdate', updateProgress);
-
-    progressContainer.addEventListener('click', (e) => {
-        seek(e);
-    });
-
-    progressContainer.addEventListener('mousedown', (e) => {
-        isDragging = true;
-        seek(e);
-    });
-
-    window.addEventListener('mousemove', (e) => {
-        if (isDragging) {
-            seek(e);
-        }
-    });
-
-    window.addEventListener('mouseup', () => {
-        isDragging = false;
-    });
-
-    // --- Volume & Mute Logic ---
-
-    function updateMuteIcon(isMuted) {
-        if (isMuted) {
-            volumeIcon.className = 'fas fa-volume-mute';
-        } else if (audioPlayer.volume < 0.5) {
-            volumeIcon.className = 'fas fa-volume-down';
-        } else {
-            volumeIcon.className = 'fas fa-volume-up';
-        }
-    }
-
-    function loadVolumeSettings() {
-        const vol = localStorage.getItem('player:volume') ?? 70;
-        const muted = localStorage.getItem('player:muted') === 'true';
-        
-        volumeRange.value = vol;
-        audioPlayer.volume = vol / 100;
-        audioPlayer.muted = muted;
-        updateMuteIcon(muted);
-    }
-
-    function saveVolumeSettings() {
-        localStorage.setItem('player:volume', volumeRange.value);
-        localStorage.setItem('player:muted', audioPlayer.muted);
-    }
-
-    volumeRange.addEventListener('input', () => {
-        audioPlayer.volume = volumeRange.value / 100;
-        audioPlayer.muted = false;
-        updateMuteIcon(audioPlayer.muted);
-        saveVolumeSettings();
-    });
-
-    btnMute.addEventListener('click', () => {
-        audioPlayer.muted = !audioPlayer.muted;
-        updateMuteIcon(audioPlayer.muted);
-        saveVolumeSettings();
-    });
-
-    // --- Initialization ---
-    async function init() {
-        try {
-            const tracks = await fetchTracks();
-            renderTracklist(tracks);
-            loadVolumeSettings();
-        } catch (err) {
-            console.error(err);
-            tracklist.innerHTML = '<div class="status-message">Failed to load library.</div>';
-        }
-    }
-
-    init();
-});
-
-function setupPlayingSync() {
-    const audioEl = document.querySelector('audio');
-    if (!audioEl) return;
-
-    audioEl.addEventListener('play', () => {
-        document.querySelectorAll('.track-item').forEach(el => el.classList.remove('playing'));
-        const active = document.querySelector('.track-item.active');
-        if (active) active.classList.add('playing');
-
-        const playBtnIcon = document.querySelector('#btn-play i');
-        if (playBtnIcon) {
-            playBtnIcon.className = 'fas fa-pause-circle';
-        }
-    });
-
-    audioEl.addEventListener('pause', () => {
-        document.querySelectorAll('.track-item.playing').forEach(el => el.classList.remove('playing'));
-        const playBtnIcon = document.querySelector('#btn-play i');
-        if (playBtnIcon) {
-            playBtnIcon.className = 'fas fa-play-circle';
-        }
-    });
-}
-
-if (document.readyState === 'loading') {
-    document.addEventListener('DOMContentLoaded', setupPlayingSync);
-} else {
-    setupPlayingSync();
-}
-
-// --- Synced Lyrics Overlay Module ---
-document.addEventListener('DOMContentLoaded', () => {
-    const overlay = document.getElementById('lyrics-overlay');
-    const btnClose = document.getElementById('btn-close-lyrics');
-    const coverDock = document.getElementById('player-cover');
-    const bigCover = document.getElementById('lyrics-cover');
-    const bigTitle = document.getElementById('lyrics-title');
-    const bigArtist = document.getElementById('lyrics-artist');
-    const lyricsLinesBox = document.getElementById('lyrics-lines');
-    const bigProgressFill = document.getElementById('lyrics-progress-fill');
-    const lyricsProgressContainer = document.getElementById('lyrics-progress-container');
-    const lyricsTimeCurrent = document.getElementById('lyrics-time-current');
-    const lyricsTimeTotal = document.getElementById('lyrics-time-total');
-    const lyricsScrollContainer = document.getElementById('lyrics-scroll-container');
-
-    btnClose.addEventListener('click', () => {
-        overlay.classList.add('hidden');
-    });
-
-    // Implementation of lyrics logic would go here
-});
+    function saveVolumeSettings()

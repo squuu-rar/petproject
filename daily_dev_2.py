@@ -195,7 +195,7 @@ def apply_files_from_response(content: str):
     if not content or not isinstance(content, str):
         return False, "Ответ модели пуст"
 
-    matches = list(re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)=== END FILE ===", content, re.DOTALL))
+    matches = list(re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)(?:=== END FILE ===|(?==== FILE:)|\Z)", content, re.DOTALL))
     if not matches:
         matches = list(re.finditer(r"```(?:[a-zA-Z0-9_\-]+:)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9]+)\r?\n(.*?)```", content, re.DOTALL))
 
@@ -463,7 +463,6 @@ def main():
 
         log("Тесты провалились на попытке " + str(attempt) + ":\n" + str(test_out))
         last_test_error = test_out
-        rollback()
 
     if not task_passed:
         log("Задача не решена за " + str(MAX_ATTEMPTS) + " попыток. Откат изменений.")
