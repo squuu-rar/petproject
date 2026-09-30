@@ -220,13 +220,13 @@ document.addEventListener('DOMContentLoaded', () => {
         item.dataset.index = index;
         if (track.id) item.dataset.id = track.id;
         
-        const cover = track.cover_path || '/static/img/default-cover.png';
+        const cover = track.cover_path || '/static/img/default-cover.svg';
         const duration = track.duration ? formatTime(track.duration) : '--:--';
 
         item.innerHTML = `
             <div class="track-rank">${index + 1}</div>
             <div class="track-info">
-                <img src="${cover}" alt="cover">
+                <img src="${cover}" alt="cover" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/static/img/default-cover.svg';">
                 <div class="track-text">
                     <span class="track-title-name">${track.title || 'Unknown Title'}</span>
                     <span class="track-artist-name">${track.artist || 'Unknown Artist'}</span>
@@ -235,7 +235,7 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="track-album">${track.album || '-'}</div>
             <div class="track-duration">${duration}</div>
             <div class="track-actions">
-                <button class="icon-btn like-btn" data-id="${track.id || ''}" data-liked="${track.liked}">
+                <button class="icon-btn like-btn ${track.liked ? 'liked' : ''}" data-id="${track.id || ''}" data-liked="${Boolean(track.liked)}">
                     <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
                 </button>
             </div>
@@ -357,10 +357,10 @@ document.addEventListener('DOMContentLoaded', () => {
 
         playerTitle.textContent = track.title || 'Unknown Title';
         playerArtist.textContent = track.artist || 'Unknown Artist';
-        playerCover.src = track.cover_path || '/static/img/default-cover.png';
+        playerCover.src = track.cover_path || '/static/img/default-cover.svg';
         btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
 
-        if (lyricsCover) lyricsCover.src = track.cover_path || '/static/img/default-cover.png';
+        if (lyricsCover) lyricsCover.src = track.cover_path || '/static/img/default-cover.svg';
         if (lyricsTitle) lyricsTitle.textContent = track.title || 'Unknown Title';
         if (lyricsArtist) lyricsArtist.textContent = track.artist || 'Unknown Artist';
 
@@ -531,6 +531,8 @@ document.addEventListener('DOMContentLoaded', () => {
     tracklist.addEventListener('click', async (e) => {
         const likeBtn = e.target.closest('.like-btn');
         if (!likeBtn) return;
+        e.stopPropagation();
+        e.preventDefault();
         const trackId = likeBtn.dataset.id;
         if (!trackId || trackId === '-1' || trackId === -1) return;
         const isLiked = likeBtn.dataset.liked === 'true' || likeBtn.dataset.liked === '1';

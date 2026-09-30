@@ -578,3 +578,36 @@ body {
 .player-info {
     cursor: pointer;
 }
+
+/* --- Стили для кнопок лайков и обложек --- */
+.like-btn, #btn-like-player {
+    background: transparent;
+    border: none;
+    cursor: pointer;
+    color: #b3b3b3;
+    font-size: 16px;
+    padding: 6px;
+    transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.like-btn:hover, #btn-like-player:hover {
+    color: #ffffff;
+    transform: scale(1.15);
+}
+
+.like-btn.liked, #btn-like-player.liked,
+.like-btn .fas.fa-heart, #btn-like-player .fas.fa-heart {
+    color: #1db954 !important;
+}
+
+.like-btn:active, #btn-like-player:active {
+    transform: scale(0.9);
+}
+
+.track-info img, .mini-cover {
+    width: 44px;
+    height: 44px;
+    border-radius: 4px;
+    object-fit: cover;
+    background-color: #282828;
+}
