@@ -1,4 +1,5 @@
 import asyncio
+import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
@@ -7,8 +8,8 @@ from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import init_db, get_track_by_id, get_tracks_paginated
-from schemas import TrackRead
+from db import init_db, get_track_by_id, get_tracks_paginated, get_db
+from schemas import TrackRead, HistoryCreate
 from search_service import (
     SearchOrchestrator, 
     LocalSearchService, 
@@ -123,11 +124,29 @@ async def stream_track(track_id: int, background_tasks: BackgroundTasks):
 
 @app.post("/tracks/{track_id}/like")
 def toggle_like(track_id: int, liked: bool = Query(...)):
-    from db import get_db
-    import sqlite3
     conn = get_db()
     try:
         conn.execute("UPDATE tracks SET liked = ? WHERE id = ?", (1 if liked else 0, track_id))
+        conn.commit()
+        return {"status": "ok"}
+    finally:
+        conn.close()
+
+@app.post("/history")
+def record_history(payload: HistoryCreate):
+    track = get_track_by_id(payload.track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+
+    if payload.event == "skip" and payload.elapsed_seconds >= 15:
+        raise HTTPException(status_code=400, detail="Skip only accepted if elapsed_seconds < 15")
+
+    conn = get_db()
+    try:
+        conn.execute(
+            "INSERT INTO history (track_id, event, elapsed_seconds, timestamp) VALUES (?, ?, ?, ?)",
+            (payload.track_id, payload.event, payload.elapsed_seconds, time.time())
+        )
         conn.commit()
         return {"status": "ok"}
     finally:

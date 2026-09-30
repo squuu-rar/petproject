@@ -158,3 +158,27 @@ def test_get_stream_unsupported_source(setup_test_db):
     response = client.get("/stream/1")
     assert response.status_code == 400
     assert "Unsupported source" in response.json()["detail"]
+
+def test_post_history_play(setup_test_db):
+    response = client.post("/history", json={"track_id": 1, "event": "play", "elapsed_seconds": 5.0})
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+def test_post_history_skip_valid(setup_test_db):
+    response = client.post("/history", json={"track_id": 1, "event": "skip", "elapsed_seconds": 10.0})
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+def test_post_history_skip_invalid(setup_test_db):
+    response = client.post("/history", json={"track_id": 1, "event": "skip", "elapsed_seconds": 15.0})
+    assert response.status_code == 400
+    assert "Skip only accepted" in response.json()["detail"]
+
+def test_post_history_finish(setup_test_db):
+    response = client.post("/history", json={"track_id": 1, "event": "finish", "elapsed_seconds": 180.0})
+    assert response.status_code == 200
+    assert response.json() == {"status": "ok"}
+
+def test_post_history_track_not_found(setup_test_db):
+    response = client.post("/history", json={"track_id": 999, "event": "play", "elapsed_seconds": 0.0})
+    assert response.status_code == 404

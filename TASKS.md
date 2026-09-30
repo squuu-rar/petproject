@@ -31,7 +31,7 @@
 - [x] frontend: "Любимые треки" section in the sidebar rendering GET /favorites results with the same track card component as the main list
 
 - [x] cache: background task (FastAPI BackgroundTasks) triggered on the first remote stream request — downloads the track via yt-dlp into the cache dir, updates tracks.cache_path when done; subsequent requests for the same track_id are served from disk instead of redirecting again
-- [ ] history: POST /history {track_id, event: play|skip|finish}; "skip" is only accepted if elapsed_seconds < 15, otherwise rejected with 400
+- [x] history: POST /history {track_id, event: play|skip|finish}; "skip" is only accepted if elapsed_seconds < 15, otherwise rejected with 400
 - [ ] history: GET /history?limit=50 — most recent play/finish events joined with track metadata, ordered by timestamp desc
 
 - [ ] wave: WaveEngine.generate_candidates(seed_track_ids) using ytmusicapi's get_watch_playlist radio per seed track, deduped, returned with source metadata attached

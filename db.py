@@ -34,6 +34,17 @@ def init_db():
         )
         """
     )
+    cur.execute(
+        """
+        CREATE TABLE IF NOT EXISTS history (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            track_id INTEGER,
+            event TEXT,
+            elapsed_seconds REAL,
+            timestamp REAL
+        )
+        """
+    )
     cur.execute("PRAGMA table_info(tracks)")
     columns = [col[1] for col in cur.fetchall()]
     migrations = [

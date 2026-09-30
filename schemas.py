@@ -1,5 +1,5 @@
-from pydantic import BaseModel
-from typing import Optional
+from pydantic import BaseModel, Field
+from typing import Optional, Literal
 
 class TrackRead(BaseModel):
     id: int
@@ -17,3 +17,8 @@ class TrackRead(BaseModel):
     cache_path: Optional[str]
     liked: Optional[bool] = False
     last_accessed: Optional[float] = None
+
+class HistoryCreate(BaseModel):
+    track_id: int
+    event: Literal["play", "skip", "finish"]
+    elapsed_seconds: float = 0.0
