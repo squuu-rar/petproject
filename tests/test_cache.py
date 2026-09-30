@@ -38,6 +38,10 @@ def test_cache_manager_download_and_evict(temp_cache_dir, temp_db):
     with patch("cache_manager.yt_dlp.YoutubeDL") as mock_ydl_cls:
         def fake_ydl(ydl_opts):
             class DummyYDL:
+                def __enter__(self):
+                    return self
+                def __exit__(self, *args):
+                    pass
                 def download(self, urls):
                     out_path = Path(ydl_opts['outtmpl'])
                     out_path.write_bytes(b"0" * (600 * 1024)) # 600KB
