@@ -44,6 +44,10 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentView = 'library';
     let lastSearchResults = [];
     let lastSearchQuery = '';
+    try {
+        lastSearchQuery = sessionStorage.getItem('lastSearchQuery') || '';
+        lastSearchResults = JSON.parse(sessionStorage.getItem('lastSearchResults') || '[]');
+    } catch {}
     let parsedLyrics = [];
 
     // --- Utilities ---
@@ -547,6 +551,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
                 }
             }
+            const cachedItem = lastSearchResults.find(t => String(t.id) === String(trackId));
+            if (cachedItem) {
+                cachedItem.liked = nextLiked;
+                sessionStorage.setItem('lastSearchResults', JSON.stringify(lastSearchResults));
+            }
         } catch (err) {
             console.error('Failed to toggle like:', err);
         }
@@ -593,10 +602,25 @@ document.addEventListener('DOMContentLoaded', () => {
                     tracklist.innerHTML = '<div class="status-message">Ошибка загрузки избранного</div>';
                 }
             } else if (view === 'search') {
-                if (viewTitle) viewTitle.textContent = 'Search';
-                if (lastSearchResults.length > 0) {
-                    renderSearchResults(lastSearchResults);
+                const query = lastSearchQuery || (searchInput ? searchInput.value.trim() : '');
+                if (query) {
+                    if (viewTitle) viewTitle.textContent = `Результаты: "${query}"`;
+                    if (searchInput) searchInput.value = query;
+                    if (lastSearchResults && lastSearchResults.length > 0) {
+                        renderSearchResults(lastSearchResults);
+                    } else {
+                        tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Поиск...</div>';
+                        try {
+                            const res = await searchTracks(query);
+                            lastSearchResults = res;
+                            sessionStorage.setItem('lastSearchResults', JSON.stringify(res));
+                            renderSearchResults(res);
+                        } catch {
+                            tracklist.innerHTML = '<div class="status-message">Ошибка поиска</div>';
+                        }
+                    }
                 } else {
+                    if (viewTitle) viewTitle.textContent = 'Search';
                     tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска</div>';
                 }
                 if (searchInput) searchInput.focus();
@@ -606,18 +630,27 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // --- Search Input ---
     if (searchInput) {
+        if (lastSearchQuery && !searchInput.value) {
+            searchInput.value = lastSearchQuery;
+        }
         searchInput.addEventListener('input', debounce(async (e) => {
             const query = e.target.value.trim();
+            lastSearchQuery = query;
+            sessionStorage.setItem('lastSearchQuery', query);
+
             if (!query) {
+                lastSearchResults = [];
+                sessionStorage.removeItem('lastSearchResults');
                 if (currentView === 'search') {
+                    if (viewTitle) viewTitle.textContent = 'Search';
                     tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска</div>';
                 }
                 return;
             }
-            lastSearchQuery = query;
             try {
                 const results = await searchTracks(query);
                 lastSearchResults = results;
+                sessionStorage.setItem('lastSearchResults', JSON.stringify(results));
                 document.querySelectorAll('.nav-item').forEach(el => {
                     el.classList.toggle('active', el.dataset.view === 'search');
                 });
