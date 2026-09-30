@@ -1,6 +1,6 @@
 import asyncio
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Depends, HTTPException
+from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
 from pathlib import Path
@@ -85,7 +85,7 @@ def register_remote_track(track: TrackRead):
     return save_remote_track(track.model_dump())
 
 @app.get("/stream/{track_id}")
-async def stream_track(track_id: int):
+async def stream_track(track_id: int, background_tasks: BackgroundTasks):
     track = get_track_by_id(track_id)
     
     if not track:
@@ -107,11 +107,15 @@ async def stream_track(track_id: int):
         if track.get("cache_path"):
             cached_path = Path(track["cache_path"])
             if cached_path.exists():
+                if cache_manager:
+                    cache_manager._update_access_time(track_id)
                 return FileResponse(cached_path)
 
         try:
             provider = YoutubeStreamProvider(external_id)
             stream_url = provider.get_stream_url()
+            if cache_manager:
+                background_tasks.add_task(cache_manager.get_or_download, track_id, stream_url)
             return RedirectResponse(url=stream_url, status_code=307)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")

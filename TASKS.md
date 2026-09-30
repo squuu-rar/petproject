@@ -30,7 +30,7 @@
 - [x] api: GET /favorites — tracks WHERE liked = 1 regardless of source, same response shape as GET /tracks
 - [x] frontend: "Любимые треки" section in the sidebar rendering GET /favorites results with the same track card component as the main list
 
-- [ ] cache: background task (FastAPI BackgroundTasks) triggered on the first remote stream request — downloads the track via yt-dlp into the cache dir, updates tracks.cache_path when done; subsequent requests for the same track_id are served from disk instead of redirecting again
+- [x] cache: background task (FastAPI BackgroundTasks) triggered on the first remote stream request — downloads the track via yt-dlp into the cache dir, updates tracks.cache_path when done; subsequent requests for the same track_id are served from disk instead of redirecting again
 - [ ] history: POST /history {track_id, event: play|skip|finish}; "skip" is only accepted if elapsed_seconds < 15, otherwise rejected with 400
 - [ ] history: GET /history?limit=50 — most recent play/finish events joined with track metadata, ordered by timestamp desc
 
