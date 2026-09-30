@@ -78,3 +78,6 @@
 - [ ] backend: save remote track duration on search and registration so it shows immediately
 - [ ] backend: stream and cache remote audio files locally to disk for instant replay
 - [ ] frontend: clickable artist name in track items and player dock filtering tracklist to that artist (with e.stopPropagation to prevent track playback trigger)
+
+- [ ] providers: create SoundCloudProvider (search via yt-dlp scsearch without external libs) returning unified TrackRead objects
+- [ ] search: update SearchOrchestrator to aggregate results from both YouTube Music and SoundCloud in parallel
