@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 from __future__ import annotations
+import load_env
 
 import ast
 import json
@@ -14,15 +15,6 @@ from pathlib import Path
 import requests
 
 REPO_DIR = Path(os.environ.get("REPO_DIR", "/home/squ/petproject")).resolve()
-
-# Автозагрузка переменных из .env
-_env_file = REPO_DIR / ".env"
-if _env_file.exists():
-    for _line in _env_file.read_text(encoding="utf-8").splitlines():
-        _line = _line.strip()
-        if _line and not _line.startswith("#") and "=" in _line:
-            _k, _v = _line.split("=", 1)
-            os.environ.setdefault(_k.strip(), _v.strip().strip(""'"))
 TASKS_FILE = REPO_DIR / "TASKS.md"
 LOG_FILE = REPO_DIR / "daily_dev.log"
 
