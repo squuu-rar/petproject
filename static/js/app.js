@@ -49,7 +49,22 @@ document.addEventListener('DOMContentLoaded', () => {
         lastSearchResults = JSON.parse(sessionStorage.getItem('lastSearchResults') || '[]');
     } catch {}
     let parsedLyrics = [];
-    let lyricsOffset = parseFloat(localStorage.getItem('player:lyricsOffset') || '0.8');
+    let lyricsOffset = 0.0;
+
+    function getTrackOffset(trackId) {
+        if (!trackId) return 0.0;
+        const saved = localStorage.getItem(`player:offset:${trackId}`);
+        return saved !== null ? parseFloat(saved) : 0.0;
+    }
+
+    function setTrackOffset(trackId, val) {
+        lyricsOffset = Math.round(val * 10) / 10;
+        if (trackId && trackId !== -1 && trackId !== '-1') {
+            localStorage.setItem(`player:offset:${trackId}`, lyricsOffset);
+        }
+        updateTimingToolbar();
+        updateActiveLyricsLine(audioPlayer.currentTime);
+    }
 
     // --- Utilities ---
     function isSameTrack(a, b) {
@@ -146,6 +161,9 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function loadLyrics(track) {
+        lyricsOffset = getTrackOffset(track.id);
+        updateTimingToolbar();
+
         if (!lyricsLines) return;
         lyricsLines.innerHTML = '<p class="lyrics-status"><i class="fas fa-spinner fa-spin"></i> Загрузка текста...</p>';
         parsedLyrics = [];
@@ -239,6 +257,101 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
     }
+
+    // --- UI Toolbar for Timing ---
+    function updateTimingToolbar() {
+        const valEl = document.getElementById('lyrics-timing-val');
+        if (valEl) {
+            valEl.textContent = (lyricsOffset >= 0 ? '+' : '') + lyricsOffset.toFixed(1) + 's';
+        }
+    }
+
+    function createLyricsTimingToolbar() {
+        if (!lyricsLines || document.getElementById('lyrics-timing-toolbar')) return;
+
+        const bar = document.createElement('div');
+        bar.id = 'lyrics-timing-toolbar';
+        bar.className = 'lyrics-timing-toolbar';
+        bar.innerHTML = `
+            <div class="timing-left">
+                <button id="btn-sync-now" class="timing-btn sync-btn" title="Нажмите в момент, когда вокалист начинает петь текущую строчку">
+                    <i class="fas fa-bullseye"></i> Запели сейчас
+                </button>
+            </div>
+            <div class="timing-controls">
+                <span class="timing-title">Сдвиг:</span>
+                <button class="timing-btn" data-step="-1.0">-1s</button>
+                <button class="timing-btn" data-step="-0.5">-0.5s</button>
+                <span id="lyrics-timing-val" class="timing-value">+0.0s</span>
+                <button class="timing-btn" data-step="0.5">+0.5s</button>
+                <button class="timing-btn" data-step="1.0">+1s</button>
+                <button id="btn-sync-reset" class="timing-btn reset-btn" title="Сбросить сдвиг">0s</button>
+            </div>
+        `;
+
+        lyricsLines.parentNode.insertBefore(bar, lyricsLines);
+
+        bar.addEventListener('click', (e) => {
+            const btn = e.target.closest('button');
+            if (!btn || !currentlyPlayingTrack) return;
+
+            if (btn.id === 'btn-sync-now') {
+                const cur = audioPlayer.currentTime;
+                let targetTime = 0;
+                if (parsedLyrics.length > 0) {
+                    const activeEl = lyricsLines.querySelector('.lyrics-line.active');
+                    const idx = activeEl ? parseInt(activeEl.dataset.index, 10) : 0;
+                    targetTime = parsedLyrics[idx]?.time || parsedLyrics[0].time;
+                }
+                const newOffset = Math.max(0, cur - targetTime);
+                setTrackOffset(currentlyPlayingTrack.id, newOffset);
+                showLyricsToast(`🎯 Синхронизировано: +${newOffset.toFixed(1)}s`);
+            } else if (btn.id === 'btn-sync-reset') {
+                setTrackOffset(currentlyPlayingTrack.id, 0.0);
+                showLyricsToast('Смещение сброшено: 0.0s');
+            } else if (btn.dataset.step) {
+                const step = parseFloat(btn.dataset.step);
+                setTrackOffset(currentlyPlayingTrack.id, lyricsOffset + step);
+                showLyricsToast(`Сдвиг: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
+            }
+        });
+    }
+
+    function showLyricsToast(msg) {
+        let toast = document.getElementById('lyrics-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'lyrics-toast';
+            toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#1db954;padding:8px 18px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = msg;
+        toast.style.opacity = '1';
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1600);
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+        if (!currentlyPlayingTrack) return;
+
+        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
+            setTrackOffset(currentlyPlayingTrack.id, lyricsOffset - 0.5);
+            showLyricsToast(`⏱ Текст раньше: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
+        } else if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
+            setTrackOffset(currentlyPlayingTrack.id, lyricsOffset + 0.5);
+            showLyricsToast(`⏱ Текст позже: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
+        } else if (e.key === '\\') {
+            setTrackOffset(currentlyPlayingTrack.id, 0.0);
+            showLyricsToast('⏱ Смещение сброшено: 0.0s');
+        } else if (e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы') {
+            const cur = audioPlayer.currentTime;
+            let targetTime = parsedLyrics[0]?.time || 0;
+            const newOffset = Math.max(0, cur - targetTime);
+            setTrackOffset(currentlyPlayingTrack.id, newOffset);
+            showLyricsToast(`🎯 Синхронизировано: +${newOffset.toFixed(1)}s`);
+        }
+    });
 
     // --- UI Rendering ---
     function renderTrackItem(track, index) {
@@ -599,42 +712,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Lyrics Timing Hotkeys ---
-    function showLyricsToast(msg) {
-        let toast = document.getElementById('lyrics-toast');
-        if (!toast) {
-            toast = document.createElement('div');
-            toast.id = 'lyrics-toast';
-            toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#1db954;padding:8px 18px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
-            document.body.appendChild(toast);
-        }
-        toast.textContent = msg;
-        toast.style.opacity = '1';
-        clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1600);
-    }
-
-    document.addEventListener('keydown', (e) => {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
-            lyricsOffset = Math.round((lyricsOffset - 0.2) * 10) / 10;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast(`⏱ Текст раньше: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        } else if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
-            lyricsOffset = Math.round((lyricsOffset + 0.2) * 10) / 10;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast(`⏱ Текст позже: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        } else if (e.key === '\\') {
-            lyricsOffset = 0.0;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast('⏱ Смещение текста сброшено: 0.0s');
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        }
-    });
-
     // --- Navigation Tabs ---
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', async (e) => {
@@ -724,6 +801,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Initialization ---
+    createLyricsTimingToolbar();
     loadVolumeSettings();
     fetchTracks().then(renderTracklist).catch(() => {
         tracklist.innerHTML = '<div class="status-message">Ошибка загрузки треков</div>';

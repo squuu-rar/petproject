@@ -8,8 +8,8 @@ from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import init_db, get_track_by_id, get_tracks_paginated, get_db
-from schemas import TrackRead, HistoryCreate
+from db import init_db, get_track_by_id, get_tracks_paginated, get_playback_history, get_db, save_remote_track
+from schemas import TrackRead, HistoryCreate, HistoryItemRead
 from search_service import (
     SearchOrchestrator, 
     LocalSearchService, 
@@ -17,6 +17,7 @@ from search_service import (
 )
 from providers import YoutubeStreamProvider
 from cache_manager import CacheManager
+from lyrics import fetch_lyrics
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -24,10 +25,8 @@ CACHE_DIR = STATIC_DIR / "cache"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
-# Global cache manager instance
 cache_manager: Optional[CacheManager] = None
 
-# Dependency Injection setup
 def get_search_orchestrator() -> SearchOrchestrator:
     ytmusic = YTMusic() 
     local_svc = LocalSearchService()
@@ -38,11 +37,11 @@ def get_search_orchestrator() -> SearchOrchestrator:
 async def lifespan(app: FastAPI):
     global cache_manager
     init_db()
-    # 500MB limit for cache
     cache_manager = CacheManager(CACHE_DIR, 500 * 1024 * 1024)
     yield
 
 app = FastAPI(title="Music Player API", lifespan=lifespan)
+
 @app.get("/")
 def serve_index():
     return FileResponse("static/index.html")
@@ -79,10 +78,8 @@ def search_tracks(
 ):
     return orchestrator.search(q)
 
-
 @app.post("/tracks/remote", response_model=TrackRead)
 def register_remote_track(track: TrackRead):
-    from db import save_remote_track
     return save_remote_track(track.model_dump())
 
 @app.get("/stream/{track_id}")
@@ -132,6 +129,10 @@ def toggle_like(track_id: int, liked: bool = Query(...)):
     finally:
         conn.close()
 
+@app.get("/history", response_model=list[HistoryItemRead])
+def get_history(limit: int = Query(50, ge=1, le=100)):
+    return get_playback_history(limit=limit)
+
 @app.post("/history")
 def record_history(payload: HistoryCreate):
     track = get_track_by_id(payload.track_id)
@@ -151,8 +152,6 @@ def record_history(payload: HistoryCreate):
         return {"status": "ok"}
     finally:
         conn.close()
-
-from lyrics import fetch_lyrics
 
 @app.get("/tracks/{track_id}/lyrics")
 def get_track_lyrics_by_id(track_id: int):

@@ -8,8 +8,6 @@ def fetch_lyrics(artist: str, title: str, duration: float | None = None) -> Dict
         return {}
 
     headers = {"User-Agent": "MusicStreamApp/1.0"}
-
-    # 1. Точный поиск
     base_url = "https://lrclib.net/api/get"
     params = {"artist_name": artist, "track_name": title}
     if duration:
@@ -26,7 +24,6 @@ def fetch_lyrics(artist: str, title: str, duration: float | None = None) -> Dict
     except Exception:
         pass
 
-    # 2. Фоллбек через общий поиск
     if not data or not (data.get("syncedLyrics") or data.get("plainLyrics")):
         search_query = f"{artist} {title}"
         search_url = f"https://lrclib.net/api/search?q={urllib.parse.quote(search_query)}"

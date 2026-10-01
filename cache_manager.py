@@ -16,26 +16,23 @@ class CacheManager:
     def _get_current_size(self) -> int:
         return sum(f.stat().st_size for f in self.cache_dir.rglob('*') if f.is_file())
 
-    async def get_or_download(self, track_id: int, stream_url: str) -> Path:
-        """Returns the path to the cached file, downloading it if necessary."""
+    async def get_or_download(self, track_id: int, stream_url: str) -> Optional[Path]:
         conn = get_db()
-        track = conn.execute("SELECT cache_path, source, external_id, path FROM tracks WHERE id = ?", (track_id,)).fetchone()
+        row = conn.execute("SELECT cache_path, source, external_id, path FROM tracks WHERE id = ?", (track_id,)).fetchone()
         conn.close()
 
-        if not track:
-            raise ValueError("Track not found")
-        track = dict(track)
+        if not row:
+            return None
+        
+        track = dict(row)
 
-        # If already cached
-        if track["cache_path"]:
+        if track.get("cache_path"):
             cached_file = Path(track["cache_path"])
             if cached_file.exists():
                 self._update_access_time(track_id)
                 return cached_file
 
-        # Download new
-        # Используем постоянный URL видеоролика, чтобы yt-dlp работал штатно
-        ext_id = track.get("external_id") if track else None
+        ext_id = track.get("external_id")
         target_url = f"https://www.youtube.com/watch?v={ext_id}" if ext_id else stream_url
         return await self._download_track(track_id, target_url)
 
@@ -47,8 +44,7 @@ class CacheManager:
         finally:
             conn.close()
 
-    async def _download_track(self, track_id: int, stream_url: str) -> Path:
-        # Use a temporary name to avoid partial files in cache
+    async def _download_track(self, track_id: int, stream_url: str) -> Optional[Path]:
         temp_file = self.cache_dir / f"temp_{track_id}_{int(time.time())}.tmp"
         final_file = self.cache_dir / f"cache_{track_id}.mp3"
 
@@ -61,7 +57,7 @@ class CacheManager:
             'socket_timeout': 15,
             'retries': 10,
             'fragment_retries': 10,
-            'http_chunk_size': 5242880,  # 5 MB чанки для защиты от разрывов
+            'http_chunk_size': 5242880,
             'extractor_args': {
                 'youtube': {
                     'player_client': ['android', 'web']
@@ -70,19 +66,16 @@ class CacheManager:
         }
 
         try:
-            # Run yt-dlp in a thread to not block event loop
             loop = asyncio.get_event_loop()
             await loop.run_in_executor(None, lambda: yt_dlp.YoutubeDL(ydl_opts).download([stream_url]))
 
             if not temp_file.exists():
-                raise RuntimeError("Download failed: temp file not created")
+                return None
 
-            # Rename temp to final
             if final_file.exists():
                 final_file.unlink()
             temp_file.rename(final_file)
 
-            # Update DB
             self._update_access_time(track_id)
             conn = get_db()
             try:
@@ -100,7 +93,7 @@ class CacheManager:
                     temp_file.unlink()
                 except Exception:
                     pass
-            print(f"[CacheManager] Пропуск кэширования для трека {track_id} (сеть разорвала соединение): {e}")
+            print(f"[CacheManager] Фоновая загрузка пропущена для трека {track_id}: {e}")
             return None
 
     def _evict_if_needed(self):
@@ -110,7 +103,6 @@ class CacheManager:
 
         conn = get_db()
         try:
-            # Get oldest unliked files
             cur = conn.cursor()
             oldest_files = cur.execute("""
                 SELECT id, cache_path FROM tracks 
@@ -129,7 +121,10 @@ class CacheManager:
                 path = Path(row['cache_path'])
                 
                 if path.exists():
-                    path.unlink()
+                    try:
+                        path.unlink()
+                    except Exception:
+                        pass
                 
                 conn.execute("UPDATE tracks SET cache_path = NULL WHERE id = ?", (track_id,))
             

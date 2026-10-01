@@ -60,52 +60,23 @@ def init_db():
     for col_name, col_type in migrations:
         if col_name not in columns:
             cur.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_type}")
-        cur.execute("PRAGMA table_info(history)")
+
+    cur.execute("PRAGMA table_info(history)")
     hist_cols = [col[1] for col in cur.fetchall()]
     for col_name, col_type in [("event", "TEXT"), ("elapsed_seconds", "REAL"), ("timestamp", "REAL")]:
         if col_name not in hist_cols:
             cur.execute(f"ALTER TABLE history ADD COLUMN {col_name} {col_type}")
+
     conn.commit()
     conn.close()
 
 def get_track_by_id(track_id: int) -> Optional[Dict[str, Any]]:
-    """Retrieves a single track by its ID."""
     conn = get_db()
     try:
         row = conn.execute("SELECT * FROM tracks WHERE id = ?", (track_id,)).fetchone()
         return dict(row) if row else None
     finally:
         conn.close()
-
-def update_track_cache_info(track_id: int, cache_path: Optional[str], last_accessed: float):
-    """Updates cache path and last accessed timestamp."""
-    conn = get_db()
-    try:
-        conn.execute(
-            "UPDATE tracks SET cache_path = ?, last_accessed = ? WHERE id = ?",
-            (cache_path, last_accessed, track_id)
-        )
-        conn.commit()
-    finally:
-        conn.close()
-
-def get_oldest_unliked_cache_files(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """Returns list of unliked tracks with cache files, ordered by last_accessed.
-
-    Принимает уже открытый conn (используется в фоновой очистке кэша),
-    поэтому явно выставляем row_factory, чтобы dict(row) точно работал,
-    даже если caller открыл соединение без него.
-    """
-    conn.row_factory = sqlite3.Row
-    cur = conn.execute("""
-        SELECT id, cache_path FROM tracks 
-        WHERE source = 'remote' 
-          AND liked = 0 
-          AND cache_path IS NOT NULL 
-          AND last_accessed > 0
-        ORDER BY last_accessed ASC
-    """)
-    return [dict(row) for row in cur.fetchall()]
 
 def get_tracks_paginated(
     limit: int,
@@ -149,19 +120,48 @@ def get_tracks_paginated(
     finally:
         conn.close()
 
-if __name__ == "__main__":
-    init_db()
-
+def get_playback_history(limit: int = 50) -> List[Dict[str, Any]]:
+    conn = get_db()
+    try:
+        query = '''
+            SELECT 
+                h.id AS history_id,
+                h.event,
+                h.elapsed_seconds,
+                h.timestamp,
+                t.id,
+                t.path,
+                t.title,
+                t.artist,
+                t.album,
+                t.genre,
+                t.year,
+                t.track_number,
+                t.duration,
+                t.cover_path,
+                t.source,
+                t.external_id,
+                t.cache_path,
+                t.liked,
+                t.last_accessed
+            FROM history h
+            JOIN tracks t ON h.track_id = t.id
+            WHERE h.event IN ('play', 'finish')
+            ORDER BY h.timestamp DESC
+            LIMIT ?
+        '''
+        cursor = conn.execute(query, (limit,))
+        return [dict(row) for row in cursor.fetchall()]
+    finally:
+        conn.close()
 
 def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
-    """Saves or retrieves an existing remote track in the database."""
     conn = get_db()
     try:
         cur = conn.cursor()
         ext_id = track_data.get("external_id")
         path = track_data.get("path")
         
-        # Проверяем, сохранен ли уже этот трек
         cur.execute(
             "SELECT * FROM tracks WHERE (external_id IS NOT NULL AND external_id = ?) OR path = ?",
             (ext_id, path)
@@ -172,7 +172,6 @@ def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
             res["liked"] = bool(res.get("liked", 0))
             return res
 
-        # Сохраняем новый remote трек
         cur.execute("""
             INSERT INTO tracks (
                 path, title, artist, album, genre, year,
@@ -200,3 +199,6 @@ def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
         return res
     finally:
         conn.close()
+
+if __name__ == "__main__":
+    init_db()
