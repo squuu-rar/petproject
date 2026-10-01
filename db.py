@@ -60,6 +60,11 @@ def init_db():
     for col_name, col_type in migrations:
         if col_name not in columns:
             cur.execute(f"ALTER TABLE tracks ADD COLUMN {col_name} {col_type}")
+        cur.execute("PRAGMA table_info(history)")
+    hist_cols = [col[1] for col in cur.fetchall()]
+    for col_name, col_type in [("event", "TEXT"), ("elapsed_seconds", "REAL"), ("timestamp", "REAL")]:
+        if col_name not in hist_cols:
+            cur.execute(f"ALTER TABLE history ADD COLUMN {col_name} {col_type}")
     conn.commit()
     conn.close()
 

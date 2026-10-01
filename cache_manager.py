@@ -83,8 +83,12 @@ class CacheManager:
 
         except Exception as e:
             if temp_file.exists():
-                temp_file.unlink()
-            raise RuntimeError(f"Download failed: {str(e)}")
+                try:
+                    temp_file.unlink()
+                except Exception:
+                    pass
+            print(f"[CacheManager] Пропуск кэширования для трека {track_id} (сеть разорвала соединение): {e}")
+            return None
 
     def _evict_if_needed(self):
         current_size = self._get_current_size()
