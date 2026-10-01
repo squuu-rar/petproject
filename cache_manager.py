@@ -19,7 +19,7 @@ class CacheManager:
     async def get_or_download(self, track_id: int, stream_url: str) -> Path:
         """Returns the path to the cached file, downloading it if necessary."""
         conn = get_db()
-        track = conn.execute("SELECT cache_path, source FROM tracks WHERE id = ?", (track_id,)).fetchone()
+        track = conn.execute("SELECT cache_path, source, external_id, path FROM tracks WHERE id = ?", (track_id,)).fetchone()
         conn.close()
 
         if not track:
@@ -33,7 +33,10 @@ class CacheManager:
                 return cached_file
 
         # Download new
-        return await self._download_track(track_id, stream_url)
+        # Используем постоянный URL видеоролика, чтобы yt-dlp работал штатно
+        ext_id = track.get("external_id") if track else None
+        target_url = f"https://www.youtube.com/watch?v={ext_id}" if ext_id else stream_url
+        return await self._download_track(track_id, target_url)
 
     def _update_access_time(self, track_id: int):
         conn = get_db()
@@ -54,6 +57,15 @@ class CacheManager:
             'quiet': True,
             'no_warnings': True,
             'nocheckcertificate': True,
+            'socket_timeout': 15,
+            'retries': 10,
+            'fragment_retries': 10,
+            'http_chunk_size': 5242880,  # 5 MB чанки для защиты от разрывов
+            'extractor_args': {
+                'youtube': {
+                    'player_client': ['android', 'web']
+                }
+            }
         }
 
         try:
