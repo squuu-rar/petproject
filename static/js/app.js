@@ -145,7 +145,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return result;
     }
 
-        async function loadLyrics(track) {
+    async function loadLyrics(track) {
         if (!lyricsLines) return;
         lyricsLines.innerHTML = '<p class="lyrics-status"><i class="fas fa-spinner fa-spin"></i> Загрузка текста...</p>';
         parsedLyrics = [];
@@ -157,7 +157,7 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             if (!res.ok) throw new Error('No lyrics');
             const data = await res.json();
-            
+
             const synced = data.syncedLyrics || (data.lyrics && data.lyrics.includes('[00:') ? data.lyrics : null);
             const plain = data.plainLyrics || data.plain_lyrics || data.lyrics;
 
@@ -168,7 +168,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     return;
                 }
             }
-            
+
             if (plain && typeof plain === 'string' && plain.trim().length > 0) {
                 renderPlainLyrics(plain);
                 return;
@@ -183,8 +183,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function renderPlainLyrics(text) {
         if (!lyricsLines) return;
         lyricsLines.innerHTML = '';
-        const lines = text.split('
-');
+        const lines = text.split('\n');
         lines.forEach(line => {
             const p = document.createElement('p');
             p.className = 'lyrics-line plain-line';
@@ -600,6 +599,42 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    // --- Lyrics Timing Hotkeys ---
+    function showLyricsToast(msg) {
+        let toast = document.getElementById('lyrics-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'lyrics-toast';
+            toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#1db954;padding:8px 18px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = msg;
+        toast.style.opacity = '1';
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1600);
+    }
+
+    document.addEventListener('keydown', (e) => {
+        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
+
+        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
+            lyricsOffset = Math.round((lyricsOffset - 0.2) * 10) / 10;
+            localStorage.setItem('player:lyricsOffset', lyricsOffset);
+            showLyricsToast(`⏱ Текст раньше: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
+            updateActiveLyricsLine(audioPlayer.currentTime);
+        } else if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
+            lyricsOffset = Math.round((lyricsOffset + 0.2) * 10) / 10;
+            localStorage.setItem('player:lyricsOffset', lyricsOffset);
+            showLyricsToast(`⏱ Текст позже: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
+            updateActiveLyricsLine(audioPlayer.currentTime);
+        } else if (e.key === '\\') {
+            lyricsOffset = 0.0;
+            localStorage.setItem('player:lyricsOffset', lyricsOffset);
+            showLyricsToast('⏱ Смещение текста сброшено: 0.0s');
+            updateActiveLyricsLine(audioPlayer.currentTime);
+        }
+    });
+
     // --- Navigation Tabs ---
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', async (e) => {
@@ -689,43 +724,6 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     // --- Initialization ---
-    
-    // --- Lyrics Timing Hotkeys ---
-    function showLyricsToast(msg) {
-        let toast = document.getElementById('lyrics-toast');
-        if (!toast) {
-            toast = document.createElement('div');
-            toast.id = 'lyrics-toast';
-            toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#1db954;padding:8px 18px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
-            document.body.appendChild(toast);
-        }
-        toast.textContent = msg;
-        toast.style.opacity = '1';
-        clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1600);
-    }
-
-    document.addEventListener('keydown', (e) => {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-
-        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
-            lyricsOffset = Math.round((lyricsOffset - 0.2) * 10) / 10;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast(`⏱ Текст раньше: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        } else if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
-            lyricsOffset = Math.round((lyricsOffset + 0.2) * 10) / 10;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast(`⏱ Текст позже: ${lyricsOffset >= 0 ? '+' : ''}${lyricsOffset}s`);
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        } else if (e.key === '\\') {
-            lyricsOffset = 0.0;
-            localStorage.setItem('player:lyricsOffset', lyricsOffset);
-            showLyricsToast('⏱ Смещение текста сброшено: 0.0s');
-            updateActiveLyricsLine(audioPlayer.currentTime);
-        }
-    });
-
     loadVolumeSettings();
     fetchTracks().then(renderTracklist).catch(() => {
         tracklist.innerHTML = '<div class="status-message">Ошибка загрузки треков</div>';
