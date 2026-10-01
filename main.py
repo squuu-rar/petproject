@@ -154,6 +154,13 @@ def record_history(payload: HistoryCreate):
 
 from lyrics import fetch_lyrics
 
+@app.get("/tracks/{track_id}/lyrics")
+def get_track_lyrics_by_id(track_id: int):
+    track = get_track_by_id(track_id)
+    if not track:
+        raise HTTPException(status_code=404, detail="Track not found")
+    return fetch_lyrics(track.get("artist"), track.get("title"), track.get("duration"))
+
 @app.get("/lyrics")
 def get_track_lyrics(artist: str, title: str, duration: float = None):
     return fetch_lyrics(artist, title, duration)
