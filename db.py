@@ -41,7 +41,8 @@ def init_db():
             track_id INTEGER,
             event TEXT,
             elapsed_seconds REAL,
-            timestamp REAL
+            timestamp REAL,
+            FOREIGN KEY (track_id) REFERENCES tracks(id)
         )
         """
     )

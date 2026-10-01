@@ -1,4 +1,4 @@
-from pydantic import BaseModel, Field
+from pydantic import BaseModel
 from typing import Optional, Literal
 
 class TrackRead(BaseModel):
@@ -15,7 +15,7 @@ class TrackRead(BaseModel):
     source: str
     external_id: Optional[str]
     cache_path: Optional[str]
-    liked: Optional[bool] = False
+    liked: bool = False
     last_accessed: Optional[float] = None
 
 class HistoryCreate(BaseModel):
@@ -34,12 +34,12 @@ class HistoryItemRead(BaseModel):
     artist: Optional[str]
     album: Optional[str]
     genre: Optional[str]
-    year: Optional[int] = None
+    year: Optional[int]
     track_number: Optional[int]
     duration: Optional[float]
     cover_path: Optional[str]
     source: str
     external_id: Optional[str]
     cache_path: Optional[str]
-    liked: Optional[bool] = False
-    last_accessed: Optional[float] = None
+    liked: bool
+    last_accessed: Optional[float]
