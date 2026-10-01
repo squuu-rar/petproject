@@ -24,6 +24,7 @@ class CacheManager:
 
         if not track:
             raise ValueError("Track not found")
+        track = dict(track)
 
         # If already cached
         if track["cache_path"]:
