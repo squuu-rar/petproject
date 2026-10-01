@@ -611,3 +611,18 @@ body {
     object-fit: cover;
     background-color: #282828;
 }
+
+/* Обычный текст без таймкодов */
+.lyrics-line.plain-line {
+    opacity: 0.85;
+    cursor: default;
+    font-size: 1.15rem;
+    line-height: 1.8;
+    margin: 6px 0;
+    transition: opacity 0.2s ease;
+}
+
+.lyrics-line.plain-line:hover {
+    opacity: 1;
+    color: #fff;
+}
