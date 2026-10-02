@@ -431,7 +431,9 @@ document.addEventListener('DOMContentLoaded', () => {
         playbackQueue.setQueue(results);
 
         const groups = results.reduce((acc, track, idx) => {
-            const label = track.source === 'local' ? 'Локально' : 'Найдено онлайн';
+            let label = 'YouTube Music';
+            if (track.source === 'local') label = 'Локально на диске';
+            else if (track.source === 'soundcloud') label = 'SoundCloud';
             if (!acc[label]) acc[label] = [];
             acc[label].push({ track, idx });
             return acc;
@@ -729,6 +731,19 @@ document.addEventListener('DOMContentLoaded', () => {
                     renderTracklist(tracks);
                 } catch {
                     tracklist.innerHTML = '<div class="status-message">Ошибка загрузки библиотеки</div>';
+                }
+                        } else if (view === 'wave') {
+                if (viewTitle) viewTitle.textContent = '🌊 Моя Волна (Рекомендации Last.fm & YouTube)';
+                tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Подбираем поток по вашим вкусам...</div>';
+                try {
+                    const res = await fetch('/wave?limit=25');
+                    const waveTracks = await res.json();
+                    renderTracklist(waveTracks);
+                    if (waveTracks.length > 0 && (!currentlyPlayingTrack || audioPlayer.paused)) {
+                        playTrack(0);
+                    }
+                } catch {
+                    tracklist.innerHTML = '<div class="status-message">Не удалось загрузить рекомендации Волны</div>';
                 }
             } else if (view === 'favorites') {
                 if (viewTitle) viewTitle.textContent = 'Любимые треки';

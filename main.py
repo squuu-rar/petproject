@@ -1,4 +1,3 @@
-import asyncio
 import time
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
@@ -10,14 +9,12 @@ from ytmusicapi import YTMusic
 
 from db import init_db, get_track_by_id, get_tracks_paginated, get_playback_history, get_db, save_remote_track
 from schemas import TrackRead, HistoryCreate, HistoryItemRead
-from search_service import (
-    SearchOrchestrator, 
-    LocalSearchService, 
-    RemoteSearchService
-)
+from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
+from soundcloud_service import SoundCloudSearchService
 from providers import YoutubeStreamProvider
 from cache_manager import CacheManager
 from lyrics import fetch_lyrics
+from wave_engine import WaveEngine
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -26,18 +23,21 @@ STATIC_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
 
 cache_manager: Optional[CacheManager] = None
+wave_engine: Optional[WaveEngine] = None
 
 def get_search_orchestrator() -> SearchOrchestrator:
-    ytmusic = YTMusic() 
-    local_svc = LocalSearchService()
-    remote_svc = RemoteSearchService(ytmusic)
-    return SearchOrchestrator(local_svc, remote_svc)
+    return SearchOrchestrator(
+        LocalSearchService(),
+        RemoteSearchService(YTMusic()),
+        SoundCloudSearchService()
+    )
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    global cache_manager
+    global cache_manager, wave_engine
     init_db()
     cache_manager = CacheManager(CACHE_DIR, 500 * 1024 * 1024)
+    wave_engine = WaveEngine()
     yield
 
 app = FastAPI(title="Music Player API", lifespan=lifespan)
@@ -58,7 +58,7 @@ def list_tracks(
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
-    source: Optional[str] = Query(None, pattern="^(local|remote)$")
+    source: Optional[str] = Query(None, pattern="^(local|remote|soundcloud)$")
 ):
     return get_tracks_paginated(limit, offset, sort_by, order, source=source)
 
@@ -73,10 +73,17 @@ def list_favorites(
 
 @app.get("/search", response_model=list[TrackRead])
 def search_tracks(
-    q: str = Query(..., min_length=1, description="Search query"),
+    q: str = Query(..., min_length=1),
     orchestrator: SearchOrchestrator = Depends(get_search_orchestrator)
 ):
     return orchestrator.search(q)
+
+@app.get("/wave", response_model=list[TrackRead])
+async def get_wave_recommendations(limit: int = Query(20, ge=1, le=50)):
+    global wave_engine
+    if not wave_engine:
+        wave_engine = WaveEngine()
+    return await wave_engine.generate_wave(limit=limit)
 
 @app.post("/tracks/remote", response_model=TrackRead)
 def register_remote_track(track: TrackRead):
@@ -85,17 +92,35 @@ def register_remote_track(track: TrackRead):
 @app.get("/stream/{track_id}")
 async def stream_track(track_id: int, background_tasks: BackgroundTasks):
     track = get_track_by_id(track_id)
-    
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
 
     source = track.get("source")
-
     if source == "local":
         file_path = Path(track["path"])
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Audio file not found on disk")
         return FileResponse(file_path)
+
+    if source == "soundcloud":
+        sc_url = track.get("path") or track.get("external_id")
+        if not sc_url:
+            raise HTTPException(status_code=500, detail="SoundCloud track missing URL")
+
+        if track.get("cache_path"):
+            cached_path = Path(track["cache_path"])
+            if cached_path.exists():
+                if cache_manager:
+                    cache_manager._update_access_time(track_id)
+                return FileResponse(cached_path)
+
+        stream_url = SoundCloudSearchService.get_stream_url(sc_url)
+        if not stream_url:
+            raise HTTPException(status_code=500, detail="Failed to resolve SoundCloud stream")
+
+        if cache_manager:
+            background_tasks.add_task(cache_manager.get_or_download, track_id, sc_url)
+        return RedirectResponse(url=stream_url, status_code=307)
 
     if source == "remote":
         external_id = track.get("external_id")
@@ -117,6 +142,7 @@ async def stream_track(track_id: int, background_tasks: BackgroundTasks):
             return RedirectResponse(url=stream_url, status_code=307)
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")
+
     raise HTTPException(status_code=400, detail="Unsupported source")
 
 @app.post("/tracks/{track_id}/like")

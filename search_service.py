@@ -1,19 +1,19 @@
+import asyncio
 import sqlite3
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from ytmusicapi import YTMusic
-from providers import RemoteDiscoveryProvider
 from db import get_db
+from soundcloud_service import SoundCloudSearchService
+from providers import RemoteDiscoveryProvider
 
 class LocalSearchService:
     def search(self, query: str) -> List[Dict[str, Any]]:
-        if not query:
+        if not query or not query.strip():
             return []
-        
         words = query.strip().split()
         if not words:
             return []
 
-        # Поиск по всем отдельным словам в запросе
         clauses = []
         params = []
         for word in words:
@@ -21,7 +21,7 @@ class LocalSearchService:
             clauses.append("(LOWER(title) LIKE LOWER(?) OR LOWER(artist) LIKE LOWER(?) OR LOWER(album) LIKE LOWER(?))")
             params.extend([term, term, term])
 
-        sql = f"SELECT * FROM tracks WHERE {' AND '.join(clauses)}"
+        sql = f"SELECT * FROM tracks WHERE {' AND '.join(clauses)} LIMIT 20"
         conn = get_db()
         try:
             cursor = conn.execute(sql, params)
@@ -36,35 +36,37 @@ class RemoteSearchService:
     def search(self, query: str) -> List[Dict[str, Any]]:
         if not query:
             return []
-        return self.provider.search(query)
+        try:
+            return self.provider.search(query)
+        except Exception:
+            return []
 
 class SearchOrchestrator:
-    def __init__(self, local_service: LocalSearchService, remote_service: RemoteSearchService):
+    def __init__(
+        self,
+        local_service: LocalSearchService,
+        remote_service: RemoteSearchService,
+        sc_service: Optional[SoundCloudSearchService] = None
+    ):
         self.local_service = local_service
         self.remote_service = remote_service
+        self.sc_service = sc_service
 
-    def search(self, query: str) -> List[Dict[str, Any]]:
-        # 1. Локальный поиск
-        local_results = self.local_service.search(query)
+    def _sync_and_map_remote(self, remote_results: List[Dict[str, Any]], local_results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
         local_ext_ids = {t.get("external_id") for t in local_results if t.get("external_id")}
         local_keys = {(t.get("title", "").strip().lower(), t.get("artist", "").strip().lower()) for t in local_results}
 
-        # 2. Удаленный поиск
-        remote_results = self.remote_service.search(query)
-        
-        # 3. Синхронизация с базой данных
         conn = get_db()
         mapped_remote = []
 
         try:
             for r in remote_results:
-                video_id = r.get("video_id")
+                video_id = r.get("video_id") or r.get("videoId") or r.get("external_id")
                 title = (r.get("title") or "").strip()
                 artist = (r.get("artist") or "").strip()
                 remote_cover = r.get("cover_path")
                 remote_duration = r.get("duration")
 
-                # Проверяем, есть ли уже этот трек в базе (по external_id или паре title+artist)
                 db_track = None
                 if video_id:
                     row = conn.execute("SELECT * FROM tracks WHERE external_id = ?", (video_id,)).fetchone()
@@ -79,12 +81,9 @@ class SearchOrchestrator:
                     if row:
                         db_track = dict(row)
 
-                # Если трек найден в БД
                 if db_track:
                     track_id = db_track["id"]
                     is_liked = bool(db_track.get("liked"))
-                    
-                    # Если в базе не было обложки или длительности — дописываем из YouTube
                     need_update = False
                     new_cover = db_track.get("cover_path")
                     new_dur = db_track.get("duration")
@@ -103,7 +102,6 @@ class SearchOrchestrator:
                         )
                         conn.commit()
 
-                    # Если трек уже показан в локальных результатах, не дублируем его в онлайн-секции
                     if video_id in local_ext_ids or (title.lower(), artist.lower()) in local_keys:
                         continue
 
@@ -112,7 +110,7 @@ class SearchOrchestrator:
                         "path": db_track.get("path") or f"https://www.youtube.com/watch?v={video_id}",
                         "title": title,
                         "artist": artist,
-                        "album": db_track.get("album") or r.get("album"),
+                        "album": db_track.get("album") or r.get("album") or "-",
                         "genre": db_track.get("genre"),
                         "year": db_track.get("year"),
                         "track_number": db_track.get("track_number"),
@@ -121,16 +119,16 @@ class SearchOrchestrator:
                         "source": db_track.get("source") or "remote",
                         "external_id": video_id or db_track.get("external_id"),
                         "cache_path": db_track.get("cache_path"),
-                        "liked": is_liked
+                        "liked": is_liked,
+                        "last_accessed": db_track.get("last_accessed")
                     })
                 else:
-                    # Трека нет в базе: новый удаленный трек
                     mapped_remote.append({
                         "id": -1,
                         "path": f"https://www.youtube.com/watch?v={video_id}",
                         "title": title,
                         "artist": artist,
-                        "album": r.get("album"),
+                        "album": r.get("album") or "-",
                         "genre": None,
                         "year": None,
                         "track_number": None,
@@ -139,9 +137,33 @@ class SearchOrchestrator:
                         "source": "remote",
                         "external_id": video_id,
                         "cache_path": None,
-                        "liked": False
+                        "liked": False,
+                        "last_accessed": None
                     })
         finally:
             conn.close()
 
-        return local_results + mapped_remote
+        return mapped_remote
+
+    def search(self, query: str) -> List[Dict[str, Any]]:
+        local_res = self.local_service.search(query)
+        remote_raw = self.remote_service.search(query)
+        mapped_remote = self._sync_and_map_remote(remote_raw, local_res)
+        sc_res = self.sc_service._sync_search(query, limit=10) if self.sc_service else []
+        return local_res + mapped_remote + sc_res
+
+    async def search_async(self, query: str) -> List[Dict[str, Any]]:
+        tasks = [
+            asyncio.to_thread(self.local_service.search, query),
+            asyncio.to_thread(self.remote_service.search, query)
+        ]
+        if self.sc_service:
+            tasks.append(self.sc_service.search(query, limit=10))
+
+        results = await asyncio.gather(*tasks, return_exceptions=True)
+        local_res = results[0] if isinstance(results[0], list) else []
+        remote_raw = results[1] if isinstance(results[1], list) else []
+        sc_res = results[2] if len(results) > 2 and isinstance(results[2], list) else []
+
+        mapped_remote = await asyncio.to_thread(self._sync_and_map_remote, remote_raw, local_res)
+        return local_res + mapped_remote + sc_res
