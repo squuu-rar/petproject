@@ -709,3 +709,140 @@ body {
     opacity: 1;
     color: #fff;
 }
+
+
+/* === Стили Моей Волны (Яндекс Музыка) === */
+.wave-screen {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: center;
+    min-height: calc(100vh - 160px);
+    position: relative;
+    overflow: hidden;
+    text-align: center;
+}
+
+.wave-orb-container {
+    position: relative;
+    width: 320px;
+    height: 320px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    margin-bottom: 24px;
+}
+
+.wave-orb {
+    width: 250px;
+    height: 250px;
+    border-radius: 50%;
+    background: radial-gradient(circle at 35% 35%, #ffcc00, #ff0077, #7928ca, #ff0055);
+    background-size: 200% 200%;
+    filter: blur(28px);
+    opacity: 0.85;
+    animation: wavePulse 6s ease-in-out infinite alternate, waveRotate 14s linear infinite;
+}
+
+.wave-screen.playing .wave-orb {
+    filter: blur(22px);
+    opacity: 0.95;
+    animation: wavePulse 3.5s ease-in-out infinite alternate, waveRotate 8s linear infinite;
+}
+
+@keyframes wavePulse {
+    0% { transform: scale(0.88); border-radius: 42% 58% 70% 30% / 45% 45% 55% 55%; }
+    50% { transform: scale(1.08); border-radius: 60% 40% 30% 70% / 60% 30% 70% 40%; }
+    100% { transform: scale(0.95); border-radius: 35% 65% 50% 50% / 50% 60% 40% 50%; }
+}
+
+@keyframes waveRotate {
+    0% { filter: hue-rotate(0deg) blur(26px); }
+    100% { filter: hue-rotate(360deg) blur(26px); }
+}
+
+.wave-title-overlay {
+    position: absolute;
+    font-size: 48px;
+    font-weight: 900;
+    letter-spacing: -1px;
+    color: #ffffff;
+    text-shadow: 0 4px 30px rgba(0,0,0,0.7);
+    pointer-events: none;
+    z-index: 2;
+}
+
+.wave-capsule {
+    display: inline-flex;
+    align-items: center;
+    gap: 14px;
+    background: rgba(255, 255, 255, 0.12);
+    backdrop-filter: blur(16px);
+    padding: 10px 22px;
+    border-radius: 500px;
+    margin-bottom: 24px;
+    border: 1px solid rgba(255,255,255,0.15);
+    max-width: 90%;
+    z-index: 2;
+}
+
+.wave-capsule-text {
+    font-size: 16px;
+    font-weight: 600;
+    color: #fff;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.wave-controls {
+    display: flex;
+    align-items: center;
+    gap: 22px;
+    margin-bottom: 24px;
+    z-index: 2;
+}
+
+.wave-btn-circle {
+    width: 68px;
+    height: 68px;
+    border-radius: 50%;
+    background: #ffcc00;
+    color: #000;
+    border: none;
+    font-size: 26px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    cursor: pointer;
+    transition: transform 0.15s ease, background-color 0.15s ease;
+    box-shadow: 0 8px 24px rgba(255, 204, 0, 0.4);
+}
+
+.wave-btn-circle:hover {
+    transform: scale(1.08);
+    background: #ffe033;
+}
+
+.wave-btn-secondary {
+    background: transparent;
+    border: none;
+    color: #ffffff;
+    font-size: 24px;
+    cursor: pointer;
+    transition: transform 0.15s ease, color 0.15s ease;
+}
+
+.wave-btn-secondary:hover {
+    transform: scale(1.15);
+    color: #ffcc00;
+}
+
+.wave-subtitle {
+    font-size: 14px;
+    color: rgba(255, 255, 255, 0.6);
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    z-index: 2;
+}

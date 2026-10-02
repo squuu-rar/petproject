@@ -4,18 +4,18 @@ from typing import Optional, Literal
 class TrackRead(BaseModel):
     id: int
     path: str
-    title: Optional[str]
-    artist: Optional[str]
-    album: Optional[str]
-    genre: Optional[str]
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    genre: Optional[str] = None
     year: Optional[int] = None
-    track_number: Optional[int]
-    duration: Optional[float]
-    cover_path: Optional[str]
-    source: str
-    external_id: Optional[str]
-    cache_path: Optional[str]
-    liked: bool = False
+    track_number: Optional[int] = None
+    duration: Optional[float] = None
+    cover_path: Optional[str] = None
+    source: str = "local"
+    external_id: Optional[str] = None
+    cache_path: Optional[str] = None
+    liked: Optional[bool] = False
     last_accessed: Optional[float] = None
 
 class HistoryCreate(BaseModel):
@@ -30,16 +30,16 @@ class HistoryItemRead(BaseModel):
     timestamp: float
     id: int
     path: str
-    title: Optional[str]
-    artist: Optional[str]
-    album: Optional[str]
-    genre: Optional[str]
-    year: Optional[int]
-    track_number: Optional[int]
-    duration: Optional[float]
-    cover_path: Optional[str]
-    source: str
-    external_id: Optional[str]
-    cache_path: Optional[str]
-    liked: bool
-    last_accessed: Optional[float]
+    title: Optional[str] = None
+    artist: Optional[str] = None
+    album: Optional[str] = None
+    genre: Optional[str] = None
+    year: Optional[int] = None
+    track_number: Optional[int] = None
+    duration: Optional[float] = None
+    cover_path: Optional[str] = None
+    source: str = "local"
+    external_id: Optional[str] = None
+    cache_path: Optional[str] = None
+    liked: Optional[bool] = False
+    last_accessed: Optional[float] = None

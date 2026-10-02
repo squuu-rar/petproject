@@ -151,19 +151,3 @@ class SearchOrchestrator:
         mapped_remote = self._sync_and_map_remote(remote_raw, local_res)
         sc_res = self.sc_service._sync_search(query, limit=10) if self.sc_service else []
         return local_res + mapped_remote + sc_res
-
-    async def search_async(self, query: str) -> List[Dict[str, Any]]:
-        tasks = [
-            asyncio.to_thread(self.local_service.search, query),
-            asyncio.to_thread(self.remote_service.search, query)
-        ]
-        if self.sc_service:
-            tasks.append(self.sc_service.search(query, limit=10))
-
-        results = await asyncio.gather(*tasks, return_exceptions=True)
-        local_res = results[0] if isinstance(results[0], list) else []
-        remote_raw = results[1] if isinstance(results[1], list) else []
-        sc_res = results[2] if len(results) > 2 and isinstance(results[2], list) else []
-
-        mapped_remote = await asyncio.to_thread(self._sync_and_map_remote, remote_raw, local_res)
-        return local_res + mapped_remote + sc_res

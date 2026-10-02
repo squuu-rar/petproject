@@ -1,13 +1,13 @@
 import PlaybackQueue from './playback_queue.js';
 
 document.addEventListener('DOMContentLoaded', () => {
-    // --- DOM Elements ---
+    // DOM Elements
     const tracklist = document.getElementById('tracklist');
     const searchInput = document.getElementById('search-input');
     const viewTitle = document.getElementById('view-title');
     const audioPlayer = document.getElementById('audio-player');
     
-    // Player Dock Elements
+    // Player Dock
     const playerTitle = document.getElementById('player-title');
     const playerArtist = document.getElementById('player-artist');
     const playerCover = document.getElementById('player-cover');
@@ -24,7 +24,7 @@ document.addEventListener('DOMContentLoaded', () => {
     const volumeRange = document.getElementById('volume-range');
     const volumeIcon = btnMute ? btnMute.querySelector('i') : null;
 
-    // Lyrics Elements
+    // Lyrics
     const lyricsOverlay = document.getElementById('lyrics-overlay');
     const btnCloseLyrics = document.getElementById('btn-close-lyrics');
     const playerInfo = document.querySelector('.player-info');
@@ -38,10 +38,11 @@ document.addEventListener('DOMContentLoaded', () => {
     const lyricsTimeCurrent = document.getElementById('lyrics-time-current');
     const lyricsTimeTotal = document.getElementById('lyrics-time-total');
 
-    // --- State ---
+    // State
     const playbackQueue = new PlaybackQueue();
     let currentlyPlayingTrack = null;
     let currentView = 'library';
+    let isPrefetchingWave = false;
     let lastSearchResults = [];
     let lastSearchQuery = '';
     try {
@@ -66,7 +67,6 @@ document.addEventListener('DOMContentLoaded', () => {
         updateActiveLyricsLine(audioPlayer.currentTime);
     }
 
-    // --- Utilities ---
     function isSameTrack(a, b) {
         if (!a || !b) return false;
         if (a.id && b.id && a.id !== -1 && b.id !== -1 && a.id !== '-1' && b.id !== '-1') {
@@ -94,7 +94,7 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     }
 
-    // --- API Methods ---
+    // API
     async function fetchTracks(params = {}) {
         const queryString = new URLSearchParams(params).toString();
         const response = await fetch(`/tracks?${queryString}`);
@@ -135,7 +135,134 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch(() => {});
     }
 
-    // --- Lyrics Logic ---
+    // Бесконечная догрузка волны
+    async function prefetchWaveIfNeeded() {
+        if (isPrefetchingWave) return;
+        if (playbackQueue.length - playbackQueue.index <= 3) {
+            isPrefetchingWave = true;
+            try {
+                const res = await fetch('/wave?limit=12');
+                if (res.ok) {
+                    const extraTracks = await res.json();
+                    playbackQueue.appendTracks(extraTracks);
+                }
+            } catch (err) {
+                console.error("Wave prefetch error:", err);
+            } finally {
+                isPrefetchingWave = false;
+            }
+        }
+    }
+
+    // Рендеринг Яндекс Волны (1 трек + живой шар)
+    function renderWaveView() {
+        if (!tracklist) return;
+        if (viewTitle) viewTitle.textContent = '';
+
+        const track = currentlyPlayingTrack || playbackQueue.getCurrentTrack();
+        const isPlaying = !audioPlayer.paused && Boolean(currentlyPlayingTrack);
+
+        if (!track) {
+            tracklist.innerHTML = `
+                <div class="wave-screen">
+                    <div class="wave-orb-container">
+                        <div class="wave-orb"></div>
+                        <div class="wave-title-overlay">Моя волна</div>
+                    </div>
+                    <div class="wave-controls">
+                        <button id="btn-wave-start" class="wave-btn-circle" title="Включить волну">
+                            <i class="fas fa-play" style="margin-left: 4px;"></i>
+                        </button>
+                    </div>
+                    <div class="wave-subtitle">
+                        <i class="fas fa-sparkles" style="color: #ffcc00;"></i>
+                        <span>Нажмите, чтобы включить персональный поток</span>
+                    </div>
+                </div>
+            `;
+            const startBtn = document.getElementById('btn-wave-start');
+            if (startBtn) {
+                startBtn.addEventListener('click', async () => {
+                    startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                    await initWavePlayback();
+                });
+            }
+            return;
+        }
+
+        tracklist.innerHTML = `
+            <div class="wave-screen ${isPlaying ? 'playing' : ''}">
+                <div class="wave-orb-container">
+                    <div class="wave-orb"></div>
+                    <div class="wave-title-overlay">Моя волна</div>
+                </div>
+
+                <div class="wave-capsule">
+                    <button id="wave-like-btn" class="wave-btn-secondary" style="font-size: 18px; color: ${track.liked ? '#ff0055' : 'rgba(255,255,255,0.7)'};">
+                        <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
+                    </button>
+                    <span class="wave-capsule-text">${track.artist || 'Unknown'} — ${track.title || 'Unknown'}</span>
+                    <button id="wave-dislike-btn" class="wave-btn-secondary" title="Не нравится" style="font-size: 16px; color: rgba(255,255,255,0.6);">
+                        <i class="fas fa-ban"></i>
+                    </button>
+                </div>
+
+                <div class="wave-controls">
+                    <button id="wave-prev-btn" class="wave-btn-secondary" title="Назад">
+                        <i class="fas fa-backward"></i>
+                    </button>
+                    <button id="wave-play-toggle" class="wave-btn-circle" title="Пауза / Играть">
+                        <i class="fas ${isPlaying ? 'fa-pause' : 'fa-play'}" style="${isPlaying ? '' : 'margin-left:4px;'}"></i>
+                    </button>
+                    <button id="wave-next-btn" class="wave-btn-secondary" title="Дальше">
+                        <i class="fas fa-forward"></i>
+                    </button>
+                </div>
+
+                <div class="wave-subtitle">
+                    <i class="fas fa-sparkles" style="color: #ffcc00;"></i>
+                    <span>Поток непрерывно подстраивается под ваши лайки и пропуски</span>
+                </div>
+            </div>
+        `;
+
+        document.getElementById('wave-play-toggle')?.addEventListener('click', () => {
+            togglePlay();
+            renderWaveView();
+        });
+        document.getElementById('wave-next-btn')?.addEventListener('click', () => nextTrack(true));
+        document.getElementById('wave-prev-btn')?.addEventListener('click', prevTrack);
+        
+        document.getElementById('wave-like-btn')?.addEventListener('click', async () => {
+            const nextLiked = !track.liked;
+            await toggleLike(track.id, track.liked);
+            track.liked = nextLiked;
+            if (currentlyPlayingTrack) currentlyPlayingTrack.liked = nextLiked;
+            if (btnLikePlayer) btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
+            renderWaveView();
+        });
+
+        document.getElementById('wave-dislike-btn')?.addEventListener('click', () => {
+            sendHistory(track.id, 'skip', 1.0);
+            nextTrack(true);
+        });
+    }
+
+    async function initWavePlayback() {
+        try {
+            const res = await fetch('/wave?limit=20');
+            const tracks = await res.json();
+            if (tracks.length > 0) {
+                playbackQueue.setQueue(tracks);
+                await playTrack(0);
+                renderWaveView();
+            }
+        } catch (e) {
+            console.error("Wave launch error:", e);
+        }
+    }
+
+    // Lyrics
     function parseLRC(text) {
         if (!text) return [];
         const lines = text.split('\n');
@@ -258,7 +385,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- UI Toolbar for Timing ---
     function updateTimingToolbar() {
         const valEl = document.getElementById('lyrics-timing-val');
         if (valEl) {
@@ -305,55 +431,16 @@ document.addEventListener('DOMContentLoaded', () => {
                 }
                 const newOffset = Math.max(0, cur - targetTime);
                 setTrackOffset(currentlyPlayingTrack.id, newOffset);
-                showLyricsToast(`🎯 Синхронизировано: +${newOffset.toFixed(1)}s`);
             } else if (btn.id === 'btn-sync-reset') {
                 setTrackOffset(currentlyPlayingTrack.id, 0.0);
-                showLyricsToast('Смещение сброшено: 0.0s');
             } else if (btn.dataset.step) {
                 const step = parseFloat(btn.dataset.step);
                 setTrackOffset(currentlyPlayingTrack.id, lyricsOffset + step);
-                showLyricsToast(`Сдвиг: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
             }
         });
     }
 
-    function showLyricsToast(msg) {
-        let toast = document.getElementById('lyrics-toast');
-        if (!toast) {
-            toast = document.createElement('div');
-            toast.id = 'lyrics-toast';
-            toast.style.cssText = 'position:fixed;bottom:100px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#1db954;padding:8px 18px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #333;box-shadow:0 8px 24px rgba(0,0,0,0.5);';
-            document.body.appendChild(toast);
-        }
-        toast.textContent = msg;
-        toast.style.opacity = '1';
-        clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 1600);
-    }
-
-    document.addEventListener('keydown', (e) => {
-        if (e.target.tagName === 'INPUT' || e.target.tagName === 'TEXTAREA') return;
-        if (!currentlyPlayingTrack) return;
-
-        if (e.key === '[' || e.key === '{' || e.code === 'BracketLeft') {
-            setTrackOffset(currentlyPlayingTrack.id, lyricsOffset - 0.5);
-            showLyricsToast(`⏱ Текст раньше: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
-        } else if (e.key === ']' || e.key === '}' || e.code === 'BracketRight') {
-            setTrackOffset(currentlyPlayingTrack.id, lyricsOffset + 0.5);
-            showLyricsToast(`⏱ Текст позже: ${(lyricsOffset >= 0 ? '+' : '')}${lyricsOffset.toFixed(1)}s`);
-        } else if (e.key === '\\') {
-            setTrackOffset(currentlyPlayingTrack.id, 0.0);
-            showLyricsToast('⏱ Смещение сброшено: 0.0s');
-        } else if (e.key === 's' || e.key === 'S' || e.key === 'ы' || e.key === 'Ы') {
-            const cur = audioPlayer.currentTime;
-            let targetTime = parsedLyrics[0]?.time || 0;
-            const newOffset = Math.max(0, cur - targetTime);
-            setTrackOffset(currentlyPlayingTrack.id, newOffset);
-            showLyricsToast(`🎯 Синхронизировано: +${newOffset.toFixed(1)}s`);
-        }
-    });
-
-    // --- UI Rendering ---
+    // UI Rendering
     function renderTrackItem(track, index) {
         const item = document.createElement('div');
         const isActive = isSameTrack(currentlyPlayingTrack, track);
@@ -434,6 +521,7 @@ document.addEventListener('DOMContentLoaded', () => {
             let label = 'YouTube Music';
             if (track.source === 'local') label = 'Локально на диске';
             else if (track.source === 'soundcloud') label = 'SoundCloud';
+
             if (!acc[label]) acc[label] = [];
             acc[label].push({ track, idx });
             return acc;
@@ -452,7 +540,7 @@ document.addEventListener('DOMContentLoaded', () => {
         updateActiveTrackUI();
     }
 
-    // --- Player Logic ---
+    // Playback
     async function playTrack(index) {
         if (index < 0 || index >= playbackQueue.length) return;
         const track = playbackQueue.queue[index];
@@ -465,6 +553,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 audioPlayer.pause();  
                 btnPlay.querySelector('i').className = 'fas fa-play-circle';
             }
+            if (currentView === 'wave') renderWaveView();
             return;
         }
 
@@ -482,12 +571,6 @@ document.addEventListener('DOMContentLoaded', () => {
                     const saved = await res.json();
                     track.id = saved.id;
                     currentlyPlayingTrack.id = saved.id;
-                    const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
-                    if (activeEl) {
-                        activeEl.dataset.id = saved.id;
-                        const likeBtn = activeEl.querySelector('.like-btn');
-                        if (likeBtn) likeBtn.dataset.id = saved.id;
-                    }
                 }
             } catch (err) {
                 console.error("Error registering remote track:", err);
@@ -513,6 +596,11 @@ document.addEventListener('DOMContentLoaded', () => {
 
         sendHistory(track.id, 'play', 0);
         loadLyrics(track);
+
+        if (currentView === 'wave') {
+            renderWaveView();
+        }
+        prefetchWaveIfNeeded();
     }
 
     function togglePlay() {
@@ -527,6 +615,7 @@ document.addEventListener('DOMContentLoaded', () => {
             audioPlayer.pause();
             btnPlay.querySelector('i').className = 'fas fa-play-circle';
         }
+        if (currentView === 'wave') renderWaveView();
     }
 
     function nextTrack(isSkip = false) {
@@ -536,6 +625,11 @@ document.addEventListener('DOMContentLoaded', () => {
         const next = playbackQueue.next();
         if (next) {
             playTrack(playbackQueue.index);
+        } else if (currentView === 'wave') {
+            prefetchWaveIfNeeded().then(() => {
+                const retry = playbackQueue.next();
+                if (retry) playTrack(playbackQueue.index);
+            });
         }
     }
 
@@ -546,7 +640,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // --- Volume & Mute Logic ---
     function updateMuteIcon(isMuted) {
         if (!volumeIcon) return;
         if (isMuted) {
@@ -561,7 +654,6 @@ document.addEventListener('DOMContentLoaded', () => {
     function loadVolumeSettings() {
         const vol = localStorage.getItem('player:volume') ?? 70;
         const muted = localStorage.getItem('player:muted') === 'true';
-        
         if (volumeRange) volumeRange.value = vol;
         audioPlayer.volume = vol / 100;
         audioPlayer.muted = muted;
@@ -574,7 +666,6 @@ document.addEventListener('DOMContentLoaded', () => {
         localStorage.setItem('player:muted', audioPlayer.muted ? 'true' : 'false');
     }
 
-    // --- Controls Listeners ---
     if (volumeRange) {
         volumeRange.addEventListener('input', (e) => {
             const val = parseFloat(e.target.value);
@@ -633,11 +724,13 @@ document.addEventListener('DOMContentLoaded', () => {
     audioPlayer.addEventListener('play', () => {
         if (btnPlay) btnPlay.querySelector('i').className = 'fas fa-pause-circle';
         updateActiveTrackUI();
+        if (currentView === 'wave') renderWaveView();
     });
 
     audioPlayer.addEventListener('pause', () => {
         if (btnPlay) btnPlay.querySelector('i').className = 'fas fa-play-circle';
         updateActiveTrackUI();
+        if (currentView === 'wave') renderWaveView();
     });
 
     audioPlayer.addEventListener('ended', () => {
@@ -651,7 +744,6 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnNext) btnNext.addEventListener('click', () => nextTrack(true));
     if (btnPrev) btnPrev.addEventListener('click', prevTrack);
 
-    // --- Like Buttons ---
     if (btnLikePlayer) {
         btnLikePlayer.addEventListener('click', async () => {
             if (!currentlyPlayingTrack || !currentlyPlayingTrack.id || currentlyPlayingTrack.id === -1 || currentlyPlayingTrack.id === '-1') return;
@@ -665,6 +757,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     itemBtn.dataset.liked = nextLiked;
                     itemBtn.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
                 }
+                if (currentView === 'wave') renderWaveView();
             } catch (err) {
                 console.error('Failed to toggle like:', err);
             }
@@ -690,17 +783,11 @@ document.addEventListener('DOMContentLoaded', () => {
                     btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
                 }
             }
-            const cachedItem = lastSearchResults.find(t => String(t.id) === String(trackId));
-            if (cachedItem) {
-                cachedItem.liked = nextLiked;
-                sessionStorage.setItem('lastSearchResults', JSON.stringify(lastSearchResults));
-            }
         } catch (err) {
             console.error('Failed to toggle like:', err);
         }
     });
 
-    // --- Lyrics Overlay Toggle ---
     if (playerInfo) {
         playerInfo.addEventListener('click', (e) => {
             if (e.target.closest('#btn-like-player')) return;
@@ -714,36 +801,29 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // --- Navigation Tabs ---
+    // Навигация (БЕЗ остановки воспроизведения!)
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', async (e) => {
             e.preventDefault();
             const view = item.dataset.view;
             if (!view) return;
+
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
             item.classList.add('active');
             currentView = view;
 
-            if (view === 'library') {
+            if (view === 'wave') {
+                renderWaveView();
+                if (!currentlyPlayingTrack) {
+                    await initWavePlayback();
+                }
+            } else if (view === 'library') {
                 if (viewTitle) viewTitle.textContent = 'Your Library';
                 try {
                     const tracks = await fetchTracks();
                     renderTracklist(tracks);
                 } catch {
                     tracklist.innerHTML = '<div class="status-message">Ошибка загрузки библиотеки</div>';
-                }
-                        } else if (view === 'wave') {
-                if (viewTitle) viewTitle.textContent = '🌊 Моя Волна (Рекомендации Last.fm & YouTube)';
-                tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Подбираем поток по вашим вкусам...</div>';
-                try {
-                    const res = await fetch('/wave?limit=25');
-                    const waveTracks = await res.json();
-                    renderTracklist(waveTracks);
-                    if (waveTracks.length > 0 && (!currentlyPlayingTrack || audioPlayer.paused)) {
-                        playTrack(0);
-                    }
-                } catch {
-                    tracklist.innerHTML = '<div class="status-message">Не удалось загрузить рекомендации Волны</div>';
                 }
             } else if (view === 'favorites') {
                 if (viewTitle) viewTitle.textContent = 'Любимые треки';
@@ -780,7 +860,6 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    // --- Search Input ---
     if (searchInput) {
         if (lastSearchQuery && !searchInput.value) {
             searchInput.value = lastSearchQuery;
@@ -815,7 +894,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }, 300));
     }
 
-    // --- Initialization ---
     createLyricsTimingToolbar();
     loadVolumeSettings();
     fetchTracks().then(renderTracklist).catch(() => {

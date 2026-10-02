@@ -35,12 +35,14 @@
 - [x] history: GET /history?limit=80 — most recent play/finish events joined with track metadata, ordered by timestamp desc
 
 - [x] wave: WaveEngine.generate_candidates(seed_track_ids) using ytmusicapi's get_watch_playlist radio per seed track, deduped, returned with source metadata attached
+- [x] wave: integrate Last.fm collaborative filtering into recommendation candidates
+- [x] search: SoundCloud search and audio stream extraction via yt-dlp
+- [x] frontend: "Моя Волна" single-track hero view with infinite stream prefetching
 - [ ] wave: candidate filter excluding track_ids played within the last N days OR skipped 2+ times, applied before scoring
 - [ ] wave: hybrid scorer mixing 60% remote radio candidates / 40% locally-liked library tracks into one ranked batch, mix ratio as a named constant
 - [ ] wave: skip-streak adaptation — track consecutive skips in session state; on the 2nd consecutive skip, drop the current genre cluster from the candidate pool and inject one known-liked local track as a "safe" pick
 - [ ] wave: mood presets (energy/focus/calm) as tempo + acoustic-feature filters on top of the ranked batch (needs a track_features table — add that migration first if it's missing)
 - [ ] api: GET /wave/next?mood=&limit=5 returning a personalized batch from WaveEngine, session-scoped so repeated calls don't repeat already-served candidates
-- [ ] frontend: "Моя Волна" button in the sidebar — on click, fetches /wave/next, loads the batch into the queue and starts playback; player dock shows a subtle animated waveform bar while a Wave-sourced track is playing
 
 - [ ] db: playlists(id, name, created_at) and playlist_tracks(playlist_id, track_id, position) tables, position as an integer index, unique(playlist_id, track_id)
 - [ ] playlists: POST /playlists {name} and GET /playlists listing the user's playlists with track_count; tracks may be local or remote (track_id is source-agnostic)
@@ -78,6 +80,3 @@
 - [ ] backend: save remote track duration on search and registration so it shows immediately
 - [ ] backend: stream and cache remote audio files locally to disk for instant replay
 - [ ] frontend: clickable artist name in track items and player dock filtering tracklist to that artist (with e.stopPropagation to prevent track playback trigger)
-
-- [ ] providers: create SoundCloudProvider (search via yt-dlp scsearch without external libs) returning unified TrackRead objects
-- [ ] search: update SearchOrchestrator to aggregate results from both YouTube Music and SoundCloud in parallel
