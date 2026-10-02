@@ -1,10 +1,12 @@
 import asyncio
 from typing import List, Dict, Any, Optional
 from ytmusicapi import YTMusic
-from db import get_db
+from db import get_db, get_wave_exclusions
 from lastfm_service import LastFMService
 
 class WaveEngine:
+    MAX_PARALLEL_SEARCHES = 4
+
     def __init__(self):
         self.ytmusic = YTMusic()
         self.lastfm = LastFMService()
@@ -80,64 +82,83 @@ class WaveEngine:
             return []
 
         seed_ext_ids = {s["external_id"] for s in seeds if s.get("external_id")}
-        candidates: Dict[str, Dict[str, Any]] = {}
+        blocked_ids = seed_ext_ids | await asyncio.to_thread(get_wave_exclusions)
 
-        for s in seeds:
-            if s.get("artist") and s.get("title"):
-                similar = await self.lastfm.get_similar_tracks(s["artist"], s["title"], limit=6)
-                for sim in similar:
-                    resolved = await asyncio.to_thread(self._search_youtube_stream, sim["artist"], sim["title"])
-                    if resolved and resolved["external_id"] not in seed_ext_ids and resolved["external_id"] not in candidates:
-                        candidates[resolved["external_id"]] = resolved
+        sem = asyncio.Semaphore(self.MAX_PARALLEL_SEARCHES)
 
-        def _get_yt_radio():
-            yt_candidates = []
-            for s in seeds:
+        async def resolve(sim: Dict[str, str]) -> Optional[Dict[str, Any]]:
+            async with sem:
+                return await asyncio.to_thread(self._search_youtube_stream, sim["artist"], sim["title"])
+
+        async def similar_for_seed(seed: Dict[str, Any]) -> List[Dict[str, Any]]:
+            similar = await self.lastfm.get_similar_tracks(seed["artist"], seed["title"], limit=4)
+            resolved = await asyncio.gather(*(resolve(sim) for sim in similar), return_exceptions=True)
+            return [r for r in resolved if isinstance(r, dict)]
+
+        def get_yt_radio() -> List[Dict[str, Any]]:
+            found: List[Dict[str, Any]] = []
+            for s in seeds[:2]:
                 ext_id = s.get("external_id")
                 if not ext_id:
                     continue
                 try:
-                    playlist = self.ytmusic.get_watch_playlist(videoId=ext_id, radio=True, limit=15)
-                    items = playlist.get("tracks") or playlist.get("contents") or []
-                    for item in items:
-                        v_id = item.get("videoId")
-                        if not v_id or v_id in seed_ext_ids or v_id in candidates:
-                            continue
-                        title = item.get("title")
-                        if not title:
-                            continue
-                        artists = item.get("artists", [])
-                        artist_name = artists[0].get("name") if artists else "Unknown Artist"
-                        album = item.get("album", {}).get("name") if item.get("album") else "-"
-                        thumbs = item.get("thumbnail") or item.get("thumbnails") or []
-                        cover_url = thumbs[-1]["url"] if thumbs else None
-                        dur = self._parse_duration(item.get("length"))
-
-                        yt_candidates.append({
-                            "id": -1,
-                            "external_id": v_id,
-                            "path": f"https://www.youtube.com/watch?v={v_id}",
-                            "title": title,
-                            "artist": artist_name,
-                            "album": album,
-                            "genre": "Wave (Radio)",
-                            "year": None,
-                            "track_number": None,
-                            "cover_path": cover_url,
-                            "duration": dur,
-                            "source": "remote",
-                            "cache_path": None,
-                            "liked": False,
-                            "last_accessed": None
-                        })
+                    playlist = self.ytmusic.get_watch_playlist(videoId=ext_id, radio=True, limit=10)
                 except Exception:
                     continue
-            return yt_candidates
+                items = playlist.get("tracks") or playlist.get("contents") or []
+                for item in items:
+                    v_id = item.get("videoId")
+                    title = item.get("title")
+                    if not v_id or not title:
+                        continue
+                    artists = item.get("artists", [])
+                    artist_name = artists[0].get("name") if artists else "Unknown Artist"
+                    album = item.get("album", {}).get("name") if item.get("album") else "-"
+                    thumbs = item.get("thumbnail") or item.get("thumbnails") or []
+                    found.append({
+                        "id": -1,
+                        "external_id": v_id,
+                        "path": f"https://www.youtube.com/watch?v={v_id}",
+                        "title": title,
+                        "artist": artist_name,
+                        "album": album,
+                        "genre": "Wave (Radio)",
+                        "year": None,
+                        "track_number": None,
+                        "cover_path": thumbs[-1]["url"] if thumbs else None,
+                        "duration": self._parse_duration(item.get("length")),
+                        "source": "remote",
+                        "cache_path": None,
+                        "liked": False,
+                        "last_accessed": None
+                    })
+            return found
 
-        radio_tracks = await asyncio.to_thread(_get_yt_radio)
-        for t in radio_tracks:
-            if t["external_id"] not in candidates:
-                candidates[t["external_id"]] = t
+        radio_task = asyncio.create_task(asyncio.to_thread(get_yt_radio))
+        lastfm_groups = await asyncio.gather(
+            *(similar_for_seed(s) for s in seeds[:3] if s.get("artist") and s.get("title")),
+            return_exceptions=True,
+        )
+        try:
+            radio_tracks = await radio_task
+        except Exception:
+            radio_tracks = []
+
+        lastfm_tracks = [t for group in lastfm_groups if isinstance(group, list) for t in group]
+
+        merged: List[Dict[str, Any]] = []
+        for i in range(max(len(lastfm_tracks), len(radio_tracks))):
+            if i < len(lastfm_tracks):
+                merged.append(lastfm_tracks[i])
+            if i < len(radio_tracks):
+                merged.append(radio_tracks[i])
+
+        candidates: Dict[str, Dict[str, Any]] = {}
+        for t in merged:
+            ext_id = t["external_id"]
+            if ext_id in blocked_ids or ext_id in candidates:
+                continue
+            candidates[ext_id] = t
 
         return list(candidates.values())
 
@@ -146,16 +167,16 @@ class WaveEngine:
         try:
             recent = conn.execute("""
                 SELECT track_id FROM history 
-                WHERE event IN ('play', 'finish') ORDER BY timestamp DESC LIMIT 4
+                WHERE event IN ('play', 'finish') ORDER BY timestamp DESC LIMIT 2
             """).fetchall()
-            liked = conn.execute("SELECT id as track_id FROM tracks WHERE liked = 1 ORDER BY RANDOM() LIMIT 4").fetchall()
+            liked = conn.execute("SELECT id as track_id FROM tracks WHERE liked = 1 ORDER BY RANDOM() LIMIT 2").fetchall()
             raw_seeds = [r["track_id"] for r in (list(recent) + list(liked))]
             if not raw_seeds:
-                fallback = conn.execute("SELECT id as track_id FROM tracks ORDER BY id DESC LIMIT 5").fetchall()
+                fallback = conn.execute("SELECT id as track_id FROM tracks ORDER BY id DESC LIMIT 3").fetchall()
                 raw_seeds = [r["track_id"] for r in fallback]
         finally:
             conn.close()
 
-        seeds = list(dict.fromkeys(raw_seeds))
+        seeds = list(dict.fromkeys(raw_seeds))[:3]
         candidates = await self.generate_candidates(seeds)
         return candidates[:limit]

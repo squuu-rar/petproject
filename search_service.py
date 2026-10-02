@@ -1,5 +1,6 @@
 import asyncio
 import sqlite3
+from concurrent.futures import ThreadPoolExecutor
 from typing import List, Dict, Any, Optional
 from ytmusicapi import YTMusic
 from db import get_db
@@ -145,9 +146,35 @@ class SearchOrchestrator:
 
         return mapped_remote
 
+    def _attach_db_state(self, results: List[Dict[str, Any]]) -> List[Dict[str, Any]]:
+        ext_ids = [r["external_id"] for r in results if r.get("external_id")]
+        if not ext_ids:
+            return results
+        conn = get_db()
+        try:
+            placeholders = ",".join("?" * len(ext_ids))
+            rows = conn.execute(
+                f"SELECT id, external_id, liked, cache_path FROM tracks WHERE external_id IN ({placeholders})",
+                ext_ids,
+            ).fetchall()
+        finally:
+            conn.close()
+        known = {row["external_id"]: row for row in rows}
+        for r in results:
+            row = known.get(r.get("external_id"))
+            if row:
+                r["id"] = row["id"]
+                r["liked"] = bool(row["liked"])
+                r["cache_path"] = row["cache_path"]
+        return results
+
     def search(self, query: str) -> List[Dict[str, Any]]:
         local_res = self.local_service.search(query)
-        remote_raw = self.remote_service.search(query)
+        with ThreadPoolExecutor(max_workers=2) as pool:
+            remote_future = pool.submit(self.remote_service.search, query)
+            sc_future = pool.submit(self.sc_service._sync_search, query, 10) if self.sc_service else None
+            remote_raw = remote_future.result()
+            sc_res = sc_future.result() if sc_future else []
+
         mapped_remote = self._sync_and_map_remote(remote_raw, local_res)
-        sc_res = self.sc_service._sync_search(query, limit=10) if self.sc_service else []
-        return local_res + mapped_remote + sc_res
+        return local_res + mapped_remote + self._attach_db_state(sc_res)

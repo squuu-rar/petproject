@@ -43,6 +43,7 @@ document.addEventListener('DOMContentLoaded', () => {
     let currentlyPlayingTrack = null;
     let currentView = 'library';
     let isPrefetchingWave = false;
+    let autoSkipTimer = null;
     let lastSearchResults = [];
     let lastSearchQuery = '';
     try {
@@ -51,6 +52,36 @@ document.addEventListener('DOMContentLoaded', () => {
     } catch {}
     let parsedLyrics = [];
     let lyricsOffset = 0.0;
+
+    function showToast(msg) {
+        let toast = document.getElementById('player-toast');
+        if (!toast) {
+            toast = document.createElement('div');
+            toast.id = 'player-toast';
+            toast.style.cssText = 'position:fixed;bottom:104px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#ffcc00;padding:10px 22px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #444;box-shadow:0 8px 24px rgba(0,0,0,0.6);';
+            document.body.appendChild(toast);
+        }
+        toast.textContent = msg;
+        toast.style.opacity = '1';
+        clearTimeout(toast._timer);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2200);
+    }
+
+    function syncPlayPauseUI(isPlaying) {
+        if (btnPlay) {
+            btnPlay.querySelector('i').className = isPlaying ? 'fas fa-pause-circle' : 'fas fa-play-circle';
+        }
+        const wavePlayBtn = document.getElementById('wave-play-toggle');
+        if (wavePlayBtn) {
+            wavePlayBtn.querySelector('i').className = isPlaying ? 'fas fa-pause' : 'fas fa-play';
+            wavePlayBtn.querySelector('i').style.marginLeft = isPlaying ? '0' : '4px';
+        }
+        const waveScreen = document.querySelector('.wave-screen');
+        if (waveScreen) {
+            waveScreen.classList.toggle('playing', isPlaying);
+        }
+        updateActiveTrackUI();
+    }
 
     function getTrackOffset(trackId) {
         if (!trackId) return 0.0;
@@ -94,6 +125,12 @@ document.addEventListener('DOMContentLoaded', () => {
         return `${mins}:${secs.toString().padStart(2, '0')}`;
     }
 
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
     // API
     async function fetchTracks(params = {}) {
         const queryString = new URLSearchParams(params).toString();
@@ -135,7 +172,6 @@ document.addEventListener('DOMContentLoaded', () => {
         }).catch(() => {});
     }
 
-    // Бесконечная догрузка волны
     async function prefetchWaveIfNeeded() {
         if (isPrefetchingWave) return;
         if (playbackQueue.length - playbackQueue.index <= 3) {
@@ -154,13 +190,12 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    // Рендеринг Яндекс Волны (1 трек + живой шар)
     function renderWaveView() {
         if (!tracklist) return;
         if (viewTitle) viewTitle.textContent = '';
 
         const track = currentlyPlayingTrack || playbackQueue.getCurrentTrack();
-        const isPlaying = !audioPlayer.paused && Boolean(currentlyPlayingTrack);
+        const isPlaying = !audioPlayer.paused && Boolean(currentlyPlayingTrack) && !audioPlayer.error;
 
         if (!track) {
             tracklist.innerHTML = `
@@ -201,7 +236,7 @@ document.addEventListener('DOMContentLoaded', () => {
                     <button id="wave-like-btn" class="wave-btn-secondary" style="font-size: 18px; color: ${track.liked ? '#ff0055' : 'rgba(255,255,255,0.7)'};">
                         <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
                     </button>
-                    <span class="wave-capsule-text">${track.artist || 'Unknown'} — ${track.title || 'Unknown'}</span>
+                    <span class="wave-capsule-text">${escapeHtml(track.artist || 'Unknown')} — ${escapeHtml(track.title || 'Unknown')}</span>
                     <button id="wave-dislike-btn" class="wave-btn-secondary" title="Не нравится" style="font-size: 16px; color: rgba(255,255,255,0.6);">
                         <i class="fas fa-ban"></i>
                     </button>
@@ -228,7 +263,6 @@ document.addEventListener('DOMContentLoaded', () => {
 
         document.getElementById('wave-play-toggle')?.addEventListener('click', () => {
             togglePlay();
-            renderWaveView();
         });
         document.getElementById('wave-next-btn')?.addEventListener('click', () => nextTrack(true));
         document.getElementById('wave-prev-btn')?.addEventListener('click', prevTrack);
@@ -244,7 +278,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         document.getElementById('wave-dislike-btn')?.addEventListener('click', () => {
             sendHistory(track.id, 'skip', 1.0);
-            nextTrack(true);
+            nextTrack(false);
         });
     }
 
@@ -448,7 +482,7 @@ document.addEventListener('DOMContentLoaded', () => {
         item.dataset.index = index;
         if (track.id) item.dataset.id = track.id;
         
-        const cover = track.cover_path || '/static/img/default-cover.svg';
+        const cover = escapeHtml(track.cover_path || '/static/img/default-cover.svg');
         const duration = track.duration ? formatTime(track.duration) : '--:--';
 
         item.innerHTML = `
@@ -456,11 +490,11 @@ document.addEventListener('DOMContentLoaded', () => {
             <div class="track-info">
                 <img src="${cover}" alt="cover" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/static/img/default-cover.svg';">
                 <div class="track-text">
-                    <span class="track-title-name">${track.title || 'Unknown Title'}</span>
-                    <span class="track-artist-name">${track.artist || 'Unknown Artist'}</span>
+                    <span class="track-title-name">${escapeHtml(track.title || 'Unknown Title')}</span>
+                    <span class="track-artist-name">${escapeHtml(track.artist || 'Unknown Artist')}</span>
                 </div>
             </div>
-            <div class="track-album">${track.album || '-'}</div>
+            <div class="track-album">${escapeHtml(track.album || '-')}</div>
             <div class="track-duration">${duration}</div>
             <div class="track-actions">
                 <button class="icon-btn like-btn ${track.liked ? 'liked' : ''}" data-id="${track.id || ''}" data-liked="${Boolean(track.liked)}">
@@ -483,7 +517,7 @@ document.addEventListener('DOMContentLoaded', () => {
             const track = playbackQueue.queue[idx];
             if (track && isSameTrack(track, currentlyPlayingTrack)) {
                 el.classList.add('active');
-                if (!audioPlayer.paused) {
+                if (!audioPlayer.paused && !audioPlayer.error) {
                     el.classList.add('playing');
                 } else {
                     el.classList.remove('playing');
@@ -540,20 +574,22 @@ document.addEventListener('DOMContentLoaded', () => {
         updateActiveTrackUI();
     }
 
-    // Playback
+    // Playback Core Logic
     async function playTrack(index) {
         if (index < 0 || index >= playbackQueue.length) return;
+        clearTimeout(autoSkipTimer);
         const track = playbackQueue.queue[index];
 
-        if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src) {
+        if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src && !audioPlayer.error) {
             if (audioPlayer.paused) {  
-                audioPlayer.play();  
-                btnPlay.querySelector('i').className = 'fas fa-pause-circle';
+                try {
+                    await audioPlayer.play();
+                } catch (e) {
+                    console.warn("Play failed:", e);
+                }
             } else {  
                 audioPlayer.pause();  
-                btnPlay.querySelector('i').className = 'fas fa-play-circle';
             }
-            if (currentView === 'wave') renderWaveView();
             return;
         }
 
@@ -571,9 +607,17 @@ document.addEventListener('DOMContentLoaded', () => {
                     const saved = await res.json();
                     track.id = saved.id;
                     currentlyPlayingTrack.id = saved.id;
+                } else {
+                    console.error("Failed to register track: HTTP", res.status);
+                    showToast("⚠️ Ошибка сервера при сохранении трека");
+                    autoSkipTimer = setTimeout(() => nextTrack(false), 1500);
+                    return;
                 }
             } catch (err) {
                 console.error("Error registering remote track:", err);
+                showToast("⚠️ Ошибка соединения с сервером");
+                autoSkipTimer = setTimeout(() => nextTrack(false), 1500);
+                return;
             }
         }
 
@@ -591,8 +635,10 @@ document.addEventListener('DOMContentLoaded', () => {
         if (lyricsArtist) lyricsArtist.textContent = track.artist || 'Unknown Artist';
 
         audioPlayer.src = `/stream/${track.id}`;
-        audioPlayer.play().catch(e => console.log("Play interrupted:", e));
-        btnPlay.querySelector('i').className = 'fas fa-pause-circle';
+        audioPlayer.play().catch(e => {
+            console.warn("Play interrupted or pending stream:", e);
+            syncPlayPauseUI(false);
+        });
 
         sendHistory(track.id, 'play', 0);
         loadLyrics(track);
@@ -603,24 +649,40 @@ document.addEventListener('DOMContentLoaded', () => {
         prefetchWaveIfNeeded();
     }
 
-    function togglePlay() {
+    async function togglePlay() {
         if (!currentlyPlayingTrack && playbackQueue.length > 0) {
             playTrack(0);
             return;
         }
         if (audioPlayer.paused) {
-            audioPlayer.play();
-            btnPlay.querySelector('i').className = 'fas fa-pause-circle';
+            if (audioPlayer.error || !audioPlayer.src || audioPlayer.src.endsWith('/-1')) {
+                if (playbackQueue.index >= 0) {
+                    playTrack(playbackQueue.index);
+                    return;
+                }
+            }
+            try {
+                await audioPlayer.play();
+            } catch (err) {
+                console.warn("audioPlayer.play() failed:", err);
+                syncPlayPauseUI(false);
+                if (audioPlayer.error) {
+                    showToast("⚠️ Ошибка источника. Переключаем...");
+                    autoSkipTimer = setTimeout(() => nextTrack(false), 1200);
+                }
+            }
         } else {
             audioPlayer.pause();
-            btnPlay.querySelector('i').className = 'fas fa-play-circle';
         }
-        if (currentView === 'wave') renderWaveView();
     }
 
     function nextTrack(isSkip = false) {
+        clearTimeout(autoSkipTimer);
         if (isSkip && currentlyPlayingTrack) {
-            sendHistory(currentlyPlayingTrack.id, 'skip', audioPlayer.currentTime || 0);
+            const elapsed = audioPlayer.currentTime || 0;
+            if (elapsed < 15) {
+                sendHistory(currentlyPlayingTrack.id, 'skip', elapsed);
+            }
         }
         const next = playbackQueue.next();
         if (next) {
@@ -634,6 +696,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function prevTrack() {
+        clearTimeout(autoSkipTimer);
         const prev = playbackQueue.previous();
         if (prev) {
             playTrack(playbackQueue.index);
@@ -722,15 +785,21 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     audioPlayer.addEventListener('play', () => {
-        if (btnPlay) btnPlay.querySelector('i').className = 'fas fa-pause-circle';
-        updateActiveTrackUI();
-        if (currentView === 'wave') renderWaveView();
+        syncPlayPauseUI(true);
     });
 
     audioPlayer.addEventListener('pause', () => {
-        if (btnPlay) btnPlay.querySelector('i').className = 'fas fa-play-circle';
-        updateActiveTrackUI();
-        if (currentView === 'wave') renderWaveView();
+        syncPlayPauseUI(false);
+    });
+
+    audioPlayer.addEventListener('error', (e) => {
+        console.error("Audio playback error:", e, audioPlayer.error);
+        syncPlayPauseUI(false);
+        showToast("⚠️ Трек недоступен. Переключаем на следующий...");
+        clearTimeout(autoSkipTimer);
+        autoSkipTimer = setTimeout(() => {
+            nextTrack(false);
+        }, 1800);
     });
 
     audioPlayer.addEventListener('ended', () => {
@@ -801,12 +870,12 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Навигация (БЕЗ остановки воспроизведения!)
+    // Навигация
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', async (e) => {
             e.preventDefault();
             const view = item.dataset.view;
-            if (!view) return;
+            if (!view || view === currentView) return;
 
             document.querySelectorAll('.nav-item').forEach(el => el.classList.remove('active'));
             item.classList.add('active');

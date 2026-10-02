@@ -1,5 +1,6 @@
 import time
 from contextlib import asynccontextmanager
+from functools import lru_cache
 from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
 from fastapi.staticfiles import StaticFiles
 from fastapi.responses import FileResponse, RedirectResponse
@@ -25,6 +26,7 @@ CACHE_DIR.mkdir(parents=True, exist_ok=True)
 cache_manager: Optional[CacheManager] = None
 wave_engine: Optional[WaveEngine] = None
 
+@lru_cache(maxsize=1)
 def get_search_orchestrator() -> SearchOrchestrator:
     return SearchOrchestrator(
         LocalSearchService(),
@@ -44,7 +46,7 @@ app = FastAPI(title="Music Player API", lifespan=lifespan)
 
 @app.get("/")
 def serve_index():
-    return FileResponse("static/index.html")
+    return FileResponse(STATIC_DIR / "index.html")
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
@@ -90,7 +92,7 @@ def register_remote_track(track: TrackRead):
     return save_remote_track(track.model_dump())
 
 @app.get("/stream/{track_id}")
-async def stream_track(track_id: int, background_tasks: BackgroundTasks):
+def stream_track(track_id: int, background_tasks: BackgroundTasks):
     track = get_track_by_id(track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -137,9 +139,14 @@ async def stream_track(track_id: int, background_tasks: BackgroundTasks):
         try:
             provider = YoutubeStreamProvider(external_id)
             stream_url = provider.get_stream_url()
+            if not stream_url:
+                raise HTTPException(status_code=500, detail="Failed to extract YouTube stream URL")
             if cache_manager:
-                background_tasks.add_task(cache_manager.get_or_download, track_id, stream_url)
+                yt_watch_url = f"https://www.youtube.com/watch?v={external_id}"
+                background_tasks.add_task(cache_manager.get_or_download, track_id, yt_watch_url)
             return RedirectResponse(url=stream_url, status_code=307)
+        except HTTPException:
+            raise
         except Exception as e:
             raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")
 
@@ -149,8 +156,10 @@ async def stream_track(track_id: int, background_tasks: BackgroundTasks):
 def toggle_like(track_id: int, liked: bool = Query(...)):
     conn = get_db()
     try:
-        conn.execute("UPDATE tracks SET liked = ? WHERE id = ?", (1 if liked else 0, track_id))
+        cur = conn.execute("UPDATE tracks SET liked = ? WHERE id = ?", (1 if liked else 0, track_id))
         conn.commit()
+        if cur.rowcount == 0:
+            raise HTTPException(status_code=404, detail="Track not found")
         return {"status": "ok"}
     finally:
         conn.close()

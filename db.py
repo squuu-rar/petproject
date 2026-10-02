@@ -1,4 +1,5 @@
 import sqlite3
+import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
 
@@ -59,6 +60,11 @@ def init_db():
     for col_name, col_type in [("event", "TEXT"), ("elapsed_seconds", "REAL"), ("timestamp", "REAL")]:
         if col_name not in hist_cols:
             cur.execute(f"ALTER TABLE history ADD COLUMN {col_name} {col_type}")
+
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tracks_external_id ON tracks(external_id)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_tracks_liked ON tracks(liked)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_history_timestamp ON history(timestamp)")
+    cur.execute("CREATE INDEX IF NOT EXISTS idx_history_track ON history(track_id)")
 
     conn.commit()
     conn.close()
@@ -121,6 +127,24 @@ def get_playback_history(limit: int = 50) -> List[Dict[str, Any]]:
         """
         cur = conn.execute(query, (limit,))
         return [dict(row) for row in cur.fetchall()]
+    finally:
+        conn.close()
+
+def get_wave_exclusions(days: int = 3, skip_threshold: int = 2) -> set:
+    since = time.time() - days * 86400
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT t.external_id AS external_id,
+                   SUM(CASE WHEN h.event IN ('play', 'finish') AND h.timestamp >= ? THEN 1 ELSE 0 END) AS recent_plays,
+                   SUM(CASE WHEN h.event = 'skip' THEN 1 ELSE 0 END) AS skips
+            FROM history h
+            JOIN tracks t ON t.id = h.track_id
+            WHERE t.external_id IS NOT NULL
+            GROUP BY t.id
+            HAVING recent_plays > 0 OR skips >= ?
+        """, (since, skip_threshold)).fetchall()
+        return {r["external_id"] for r in rows}
     finally:
         conn.close()
 
