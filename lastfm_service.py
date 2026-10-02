@@ -9,9 +9,11 @@ class LastFMService:
     BASE_URL = "https://ws.audioscrobbler.com/2.0/"
 
     def __init__(self, api_key: Optional[str] = None):
-        self.api_key = api_key or os.environ.get("LASTFM_API_KEY", "bb23ebdaeae30457ab55eb971df1f6af")
+        self.api_key = api_key or os.environ.get("LASTFM_API_KEY", "")
 
     def _sync_request(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.api_key:
+            return {}
         params["api_key"] = self.api_key
         params["format"] = "json"
         url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
@@ -25,7 +27,7 @@ class LastFMService:
         return {}
 
     async def get_similar_tracks(self, artist: str, track: str, limit: int = 15) -> List[Dict[str, str]]:
-        if not artist or not track:
+        if not artist or not track or not self.api_key:
             return []
 
         def _fetch():
@@ -51,7 +53,9 @@ class LastFMService:
         return await asyncio.to_thread(_fetch)
 
     async def get_loved_tracks(self, username: Optional[str] = None, limit: int = 50) -> List[Dict[str, str]]:
-        user = username or os.environ.get("LASTFM_USERNAME", "squ666")
+        user = username or os.environ.get("LASTFM_USERNAME", "")
+        if not user or not self.api_key:
+            return []
 
         def _fetch():
             data = self._sync_request({
