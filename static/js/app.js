@@ -1,13 +1,13 @@
 import PlaybackQueue from './playback_queue.js';
 
 document.addEventListener('DOMContentLoaded', () => {
-    // DOM Elements
+    // Основные элементы страницы
     const tracklist = document.getElementById('tracklist');
-    const searchInput = document.getElementById('search-input');
     const viewTitle = document.getElementById('view-title');
     const audioPlayer = document.getElementById('audio-player');
-    
-    // Player Dock
+    const playerDock = document.getElementById('player-dock');
+
+    // Элементы нижнего плеера
     const playerTitle = document.getElementById('player-title');
     const playerArtist = document.getElementById('player-artist');
     const playerCover = document.getElementById('player-cover');
@@ -16,55 +16,77 @@ document.addEventListener('DOMContentLoaded', () => {
     const btnPrev = document.getElementById('btn-prev');
     const btnLikePlayer = document.getElementById('btn-like-player');
     const progressFill = document.getElementById('progress-fill');
-    const progressContainer = document.querySelector('.progress-bar');
+    const progressTrack = document.querySelector('.progress-track');
     const timeCurrent = document.getElementById('time-current');
     const timeTotal = document.getElementById('time-total');
-    
     const btnMute = document.getElementById('btn-mute');
     const volumeRange = document.getElementById('volume-range');
     const volumeIcon = btnMute ? btnMute.querySelector('i') : null;
 
-    // Lyrics
-    const lyricsOverlay = document.getElementById('lyrics-overlay');
-    const btnCloseLyrics = document.getElementById('btn-close-lyrics');
-    const playerInfo = document.querySelector('.player-info');
-    const lyricsCover = document.getElementById('lyrics-cover');
-    const lyricsTitle = document.getElementById('lyrics-title');
-    const lyricsArtist = document.getElementById('lyrics-artist');
-    const lyricsLines = document.getElementById('lyrics-lines');
-    const lyricsScrollContainer = document.getElementById('lyrics-scroll-container');
-    const lyricsProgressFill = document.getElementById('lyrics-progress-fill');
-    const lyricsProgressContainer = document.getElementById('lyrics-progress-container');
-    const lyricsTimeCurrent = document.getElementById('lyrics-time-current');
-    const lyricsTimeTotal = document.getElementById('lyrics-time-total');
-
-    // State
+    // Внутреннее состояние
     const playbackQueue = new PlaybackQueue();
     let currentlyPlayingTrack = null;
     let currentView = 'library';
     let isPrefetchingWave = false;
     let autoSkipTimer = null;
-    let lastSearchResults = [];
-    let lastSearchQuery = '';
-    try {
-        lastSearchQuery = sessionStorage.getItem('lastSearchQuery') || '';
-        lastSearchResults = JSON.parse(sessionStorage.getItem('lastSearchResults') || '[]');
-    } catch {}
-    let parsedLyrics = [];
-    let lyricsOffset = 0.0;
+    let searchDebounceTimer = null;
+
+    // Наборы полок для витрины поиска
+    const SEARCH_SHELVES = [
+        {
+            title: "Подборки музыки",
+            cards: [
+                { name: "Осенняя", icon: "fa-leaf", bg: "linear-gradient(135deg, #c2410c, #78350f)" },
+                { name: "Настроения", icon: "fa-sun", bg: "linear-gradient(135deg, #f59e0b, #d97706)" },
+                { name: "Для занятий", icon: "fa-person-running", bg: "linear-gradient(135deg, #ef4444, #991b1b)" },
+                { name: "Жанры", icon: "fa-compact-disc", bg: "linear-gradient(135deg, #ec4899, #be185d)" },
+                { name: "Эпохи", icon: "fa-history", bg: "linear-gradient(135deg, #6366f1, #4338ca)" }
+            ]
+        },
+        {
+            title: "Вы могли пропустить",
+            cards: [
+                { name: "Ночной драйв", icon: "fa-car-side", bg: "linear-gradient(135deg, #3b82f6, #1d4ed8)" },
+                { name: "Русский рэп", icon: "fa-microphone-lines", bg: "linear-gradient(135deg, #10b981, #047857)" },
+                { name: "Иностранный рок", icon: "fa-guitar", bg: "linear-gradient(135deg, #8b5cf6, #6d28d9)" },
+                { name: "Электроника", icon: "fa-bolt", bg: "linear-gradient(135deg, #06b6d4, #0e7490)" }
+            ]
+        }
+    ];
 
     function showToast(msg) {
         let toast = document.getElementById('player-toast');
         if (!toast) {
             toast = document.createElement('div');
             toast.id = 'player-toast';
-            toast.style.cssText = 'position:fixed;bottom:104px;left:50%;transform:translateX(-50%);background:rgba(20,20,20,0.92);color:#ffcc00;padding:10px 22px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid #444;box-shadow:0 8px 24px rgba(0,0,0,0.6);';
+            toast.style.cssText = 'position:fixed;bottom:104px;left:50%;transform:translateX(-50%);background:rgba(18,20,26,0.95);color:#ffcc00;padding:10px 24px;border-radius:24px;font-size:14px;font-weight:600;z-index:9999;pointer-events:none;transition:opacity 0.25s ease;border:1px solid rgba(255,255,255,0.12);box-shadow:0 8px 32px rgba(0,0,0,0.6);';
             document.body.appendChild(toast);
         }
         toast.textContent = msg;
         toast.style.opacity = '1';
         clearTimeout(toast._timer);
-        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2200);
+        toast._timer = setTimeout(() => { toast.style.opacity = '0'; }, 2400);
+    }
+
+    function formatTime(seconds) {
+        if (!seconds || isNaN(seconds)) return '0:00';
+        const mins = Math.floor(seconds / 60);
+        const secs = Math.floor(seconds % 60);
+        return `${mins}:${secs.toString().padStart(2, '0')}`;
+    }
+
+    function escapeHtml(value) {
+        return String(value ?? '').replace(/[&<>"']/g, ch => ({
+            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+        }[ch]));
+    }
+
+    function isSameTrack(a, b) {
+        if (!a || !b) return false;
+        if (a.id && b.id && a.id !== -1 && b.id !== -1 && a.id !== '-1' && b.id !== '-1') {
+            return a.id === b.id;
+        }
+        return a.title === b.title && a.artist === b.artist;
     }
 
     function syncPlayPauseUI(isPlaying) {
@@ -83,80 +105,32 @@ document.addEventListener('DOMContentLoaded', () => {
         updateActiveTrackUI();
     }
 
-    function getTrackOffset(trackId) {
-        if (!trackId) return 0.0;
-        const saved = localStorage.getItem(`player:offset:${trackId}`);
-        return saved !== null ? parseFloat(saved) : 0.0;
-    }
-
-    function setTrackOffset(trackId, val) {
-        lyricsOffset = Math.round(val * 10) / 10;
-        if (trackId && trackId !== -1 && trackId !== '-1') {
-            localStorage.setItem(`player:offset:${trackId}`, lyricsOffset);
-        }
-        updateTimingToolbar();
-        updateActiveLyricsLine(audioPlayer.currentTime);
-    }
-
-    function isSameTrack(a, b) {
-        if (!a || !b) return false;
-        if (a.id && b.id && a.id !== -1 && b.id !== -1 && a.id !== '-1' && b.id !== '-1') {
-            return a.id === b.id;
-        }
-        return a.title === b.title && a.artist === b.artist;
-    }
-
-    function debounce(func, wait) {
-        let timeout;
-        return function executedFunction(...args) {
-            const later = () => {
-                clearTimeout(timeout);
-                func(...args);
-            };
-            clearTimeout(timeout);
-            timeout = setTimeout(later, wait);
-        };
-    }
-
-    function formatTime(seconds) {
-        if (!seconds || isNaN(seconds)) return '0:00';
-        const mins = Math.floor(seconds / 60);
-        const secs = Math.floor(seconds % 60);
-        return `${mins}:${secs.toString().padStart(2, '0')}`;
-    }
-
-    function escapeHtml(value) {
-        return String(value ?? '').replace(/[&<>"']/g, ch => ({
-            '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
-        }[ch]));
-    }
-
-    // API
+    // =========================================================================
+    // Сетевые вызовы
+    // =========================================================================
     async function fetchTracks(params = {}) {
-        const queryString = new URLSearchParams(params).toString();
-        const response = await fetch(`/tracks?${queryString}`);
-        if (!response.ok) throw new Error('Failed to fetch tracks');
-        return await response.json();
+        const query = new URLSearchParams(params).toString();
+        const res = await fetch(`/tracks?${query}`);
+        if (!res.ok) throw new Error('Ошибка загрузки треков');
+        return await res.json();
     }
 
     async function fetchFavorites() {
-        const response = await fetch('/favorites');
-        if (!response.ok) throw new Error('Failed to fetch favorites');
-        return await response.json();
+        const res = await fetch('/favorites');
+        if (!res.ok) throw new Error('Ошибка загрузки избранного');
+        return await res.json();
     }
 
     async function searchTracks(query) {
-        const response = await fetch(`/search?q=${encodeURIComponent(query)}`);
-        if (!response.ok) throw new Error('Search failed');
-        return await response.json();
+        const res = await fetch(`/search?q=${encodeURIComponent(query)}`);
+        if (!res.ok) throw new Error('Ошибка поиска');
+        return await res.json();
     }
 
     async function toggleLike(trackId, isLiked) {
-        const response = await fetch(`/tracks/${trackId}/like?liked=${!isLiked}`, {
-            method: 'POST'
-        });
-        if (!response.ok) throw new Error('Failed to toggle like');
-        return await response.json();
+        const res = await fetch(`/tracks/${trackId}/like?liked=${!isLiked}`, { method: 'POST' });
+        if (!res.ok) throw new Error('Ошибка изменения статуса');
+        return await res.json();
     }
 
     function sendHistory(trackId, event, elapsedSeconds = 0) {
@@ -179,17 +153,20 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const res = await fetch('/wave?limit=12');
                 if (res.ok) {
-                    const extraTracks = await res.json();
-                    playbackQueue.appendTracks(extraTracks);
+                    const extra = await res.json();
+                    playbackQueue.appendTracks(extra);
                 }
             } catch (err) {
-                console.error("Wave prefetch error:", err);
+                console.error("Ошибка префетча волны:", err);
             } finally {
                 isPrefetchingWave = false;
             }
         }
     }
 
+    // =========================================================================
+    // Отрисовка сцены «Моя волна» (Центральный виджет с обложкой)
+    // =========================================================================
     function renderWaveView() {
         if (!tracklist) return;
         if (viewTitle) viewTitle.textContent = '';
@@ -200,70 +177,66 @@ document.addEventListener('DOMContentLoaded', () => {
         if (!track) {
             tracklist.innerHTML = `
                 <div class="wave-screen">
-                    <div class="wave-orb-container">
-                        <div class="wave-orb"></div>
-                        <div class="wave-title-overlay">Моя волна</div>
+                    <div class="wave-orb-wrapper">
+                        <div class="wave-orb-canvas"></div>
+                        <h2 style="position:relative;z-index:2;font-size:2.4rem;font-weight:900;">Моя волна</h2>
                     </div>
                     <div class="wave-controls">
                         <button id="btn-wave-start" class="wave-btn-circle" title="Включить волну">
                             <i class="fas fa-play" style="margin-left: 4px;"></i>
                         </button>
                     </div>
-                    <div class="wave-subtitle">
-                        <i class="fas fa-sparkles" style="color: #ffcc00;"></i>
-                        <span>Нажмите, чтобы включить персональный поток</span>
+                    <div class="wave-footer-note">
+                        <i class="fas fa-sparkles" style="color: var(--accent);"></i>
+                        <span>Нажмите, чтобы запустить бесконечный поток музыки</span>
                     </div>
                 </div>
             `;
-            const startBtn = document.getElementById('btn-wave-start');
-            if (startBtn) {
-                startBtn.addEventListener('click', async () => {
-                    startBtn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
-                    await initWavePlayback();
-                });
-            }
+            document.getElementById('btn-wave-start')?.addEventListener('click', async () => {
+                const btn = document.getElementById('btn-wave-start');
+                if (btn) btn.innerHTML = '<i class="fas fa-spinner fa-spin"></i>';
+                await initWavePlayback();
+            });
             return;
         }
 
+        const coverSrc = escapeHtml(track.cover_path || '/static/img/default-cover.svg');
+
         tracklist.innerHTML = `
             <div class="wave-screen ${isPlaying ? 'playing' : ''}">
-                <div class="wave-orb-container">
-                    <div class="wave-orb"></div>
-                    <div class="wave-title-overlay">Моя волна</div>
+                <div class="wave-orb-wrapper">
+                    <div class="wave-orb-canvas"></div>
+                    <div class="wave-track-preview-container">
+                        <img src="${coverSrc}" alt="Cover" class="wave-track-preview-img" onerror="this.src='/static/img/default-cover.svg'">
+                    </div>
                 </div>
 
                 <div class="wave-capsule">
-                    <button id="wave-like-btn" class="wave-btn-secondary" style="font-size: 18px; color: ${track.liked ? '#ff0055' : 'rgba(255,255,255,0.7)'};">
+                    <button id="wave-like-btn" class="wave-capsule-btn ${track.liked ? 'liked' : ''}" title="Нравится">
                         <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
                     </button>
                     <span class="wave-capsule-text">${escapeHtml(track.artist || 'Unknown')} — ${escapeHtml(track.title || 'Unknown')}</span>
-                    <button id="wave-dislike-btn" class="wave-btn-secondary" title="Не нравится" style="font-size: 16px; color: rgba(255,255,255,0.6);">
+                    <button id="wave-dislike-btn" class="wave-capsule-btn" title="Не нравится">
                         <i class="fas fa-ban"></i>
                     </button>
                 </div>
 
                 <div class="wave-controls">
-                    <button id="wave-prev-btn" class="wave-btn-secondary" title="Назад">
-                        <i class="fas fa-backward"></i>
-                    </button>
-                    <button id="wave-play-toggle" class="wave-btn-circle" title="Пауза / Играть">
+                    <button id="wave-prev-btn" class="wave-btn-side" title="Предыдущий"><i class="fas fa-backward-step"></i></button>
+                    <button id="wave-play-toggle" class="wave-btn-circle" title="Воспроизведение / Пауза">
                         <i class="fas ${isPlaying ? 'fa-pause' : 'fa-play'}" style="${isPlaying ? '' : 'margin-left:4px;'}"></i>
                     </button>
-                    <button id="wave-next-btn" class="wave-btn-secondary" title="Дальше">
-                        <i class="fas fa-forward"></i>
-                    </button>
+                    <button id="wave-next-btn" class="wave-btn-side" title="Следующий"><i class="fas fa-forward-step"></i></button>
                 </div>
 
-                <div class="wave-subtitle">
-                    <i class="fas fa-sparkles" style="color: #ffcc00;"></i>
+                <div class="wave-footer-note">
+                    <i class="fas fa-sparkles" style="color: var(--accent);"></i>
                     <span>Поток непрерывно подстраивается под ваши лайки и пропуски</span>
                 </div>
             </div>
         `;
 
-        document.getElementById('wave-play-toggle')?.addEventListener('click', () => {
-            togglePlay();
-        });
+        document.getElementById('wave-play-toggle')?.addEventListener('click', togglePlay);
         document.getElementById('wave-next-btn')?.addEventListener('click', () => nextTrack(true));
         document.getElementById('wave-prev-btn')?.addEventListener('click', prevTrack);
         
@@ -272,7 +245,10 @@ document.addEventListener('DOMContentLoaded', () => {
             await toggleLike(track.id, track.liked);
             track.liked = nextLiked;
             if (currentlyPlayingTrack) currentlyPlayingTrack.liked = nextLiked;
-            if (btnLikePlayer) btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
+            if (btnLikePlayer) {
+                btnLikePlayer.classList.toggle('liked', nextLiked);
+                btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
+            }
             renderWaveView();
         });
 
@@ -292,303 +268,200 @@ document.addEventListener('DOMContentLoaded', () => {
                 renderWaveView();
             }
         } catch (e) {
-            console.error("Wave launch error:", e);
+            console.error("Ошибка запуска волны:", e);
+            showToast("⚠️ Не удалось загрузить волну");
         }
     }
 
-    // Lyrics
-    function parseLRC(text) {
-        if (!text) return [];
-        const lines = text.split('\n');
-        const result = [];
-        const timeRegex = /\[(\d{2}):(\d{2})(?:\.(\d{2,3}))?\]/g;
+    // =========================================================================
+    // Отрисовка экрана поиска (Полки категорий + выдача)
+    // =========================================================================
+    function renderSearchView() {
+        if (!tracklist) return;
+        if (viewTitle) viewTitle.textContent = 'Поиск';
 
-        lines.forEach(line => {
-            const matches = [...line.matchAll(timeRegex)];
-            if (matches.length > 0) {
-                const textOnly = line.replace(timeRegex, '').trim();
-                matches.forEach(match => {
-                    const minutes = parseInt(match[1], 10);
-                    const seconds = parseInt(match[2], 10);
-                    const ms = match[3] ? (match[3].length === 2 ? parseInt(match[3], 10) * 10 : parseInt(match[3], 10)) : 0;
-                    const time = minutes * 60 + seconds + ms / 1000;
-                    result.push({ time, text: textOnly });
-                });
+        tracklist.innerHTML = `
+            <div class="search-view-container">
+                <div class="search-input-wrapper">
+                    <i class="fas fa-search search-input-icon"></i>
+                    <input type="text" id="search-input" class="search-input-field" placeholder="Трек, исполнитель или альбом..." autofocus>
+                    <div class="search-chips">
+                        <button class="search-chip" data-query="Русский рок">Русский рок</button>
+                        <button class="search-chip" data-query="Король и Шут">Король и Шут</button>
+                        <button class="search-chip" data-query="Фонк">Фонк</button>
+                        <button class="search-chip" data-query="Хиты">Хиты</button>
+                    </div>
+                </div>
+
+                <div id="search-results-zone">
+                    <div class="shelves-container">
+                        ${SEARCH_SHELVES.map(shelf => `
+                            <div>
+                                <h3 class="shelf-title">${shelf.title}</h3>
+                                <div class="shelf-grid">
+                                    ${shelf.cards.map(card => `
+                                        <div class="shelf-card" style="background: ${card.bg};" data-query="${card.name}">
+                                            <span class="shelf-card-title">${card.name}</span>
+                                            <i class="fas ${card.icon} shelf-card-icon"></i>
+                                        </div>
+                                    `).join('')}
+                                </div>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+            </div>
+        `;
+
+        const inputEl = document.getElementById('search-input');
+        inputEl?.addEventListener('input', (e) => {
+            clearTimeout(searchDebounceTimer);
+            const query = e.target.value.trim();
+            if (!query) {
+                renderSearchView();
+                return;
             }
+            searchDebounceTimer = setTimeout(() => executeSearch(query), 300);
         });
 
-        result.sort((a, b) => a.time - b.time);
-        return result;
+        tracklist.querySelectorAll('.search-chip, .shelf-card').forEach(el => {
+            el.addEventListener('click', () => {
+                const q = el.dataset.query;
+                if (inputEl) inputEl.value = q;
+                executeSearch(q);
+            });
+        });
     }
 
-    async function loadLyrics(track) {
-        lyricsOffset = getTrackOffset(track.id);
-        updateTimingToolbar();
+    async function executeSearch(query) {
+        const resultsZone = document.getElementById('search-results-zone');
+        if (!resultsZone) return;
 
-        if (!lyricsLines) return;
-        lyricsLines.innerHTML = '<p class="lyrics-status"><i class="fas fa-spinner fa-spin"></i> Загрузка текста...</p>';
-        parsedLyrics = [];
+        resultsZone.innerHTML = '<div style="padding: 24px; color: var(--text-muted);"><i class="fas fa-spinner fa-spin"></i> Поиск...</div>';
 
         try {
-            let res = await fetch(`/tracks/${track.id}/lyrics`);
-            if (!res.ok && track.artist && track.title) {
-                res = await fetch(`/lyrics?artist=${encodeURIComponent(track.artist)}&title=${encodeURIComponent(track.title)}&duration=${track.duration || ''}`);
-            }
-            if (!res.ok) throw new Error('No lyrics');
-            const data = await res.json();
-
-            const synced = data.syncedLyrics || (data.lyrics && data.lyrics.includes('[00:') ? data.lyrics : null);
-            const plain = data.plainLyrics || data.plain_lyrics || data.lyrics;
-
-            if (synced) {
-                parsedLyrics = parseLRC(synced);
-                if (parsedLyrics.length > 0) {
-                    renderParsedLyrics(parsedLyrics);
-                    return;
-                }
-            }
-
-            if (plain && typeof plain === 'string' && plain.trim().length > 0) {
-                renderPlainLyrics(plain);
+            const results = await searchTracks(query);
+            if (!results || results.length === 0) {
+                resultsZone.innerHTML = '<div style="padding: 24px; color: var(--text-muted);">Ничего не найдено</div>';
                 return;
             }
 
-            lyricsLines.innerHTML = '<p class="lyrics-status">Текст для этого трека отсутствует</p>';
-        } catch {
-            lyricsLines.innerHTML = '<p class="lyrics-status">Текст для этого трека отсутствует</p>';
-        }
-    }
+            playbackQueue.setQueue(results);
 
-    function renderPlainLyrics(text) {
-        if (!lyricsLines) return;
-        lyricsLines.innerHTML = '';
-        const lines = text.split('\n');
-        lines.forEach(line => {
-            const p = document.createElement('p');
-            p.className = 'lyrics-line plain-line';
-            p.textContent = line.trim() || ' ';
-            lyricsLines.appendChild(p);
-        });
-    }
+            const groups = results.reduce((acc, track, idx) => {
+                let label = 'YouTube Music';
+                if (track.source === 'local') label = 'Локально';
+                else if (track.source === 'soundcloud') label = 'SoundCloud';
 
-    function renderParsedLyrics(lyrics) {
-        if (!lyricsLines) return;
-        lyricsLines.innerHTML = '';
-        lyrics.forEach((line, idx) => {
-            const p = document.createElement('p');
-            p.className = 'lyrics-line';
-            p.textContent = line.text || '♪';
-            p.dataset.index = idx;
-            p.dataset.time = line.time;
-            p.addEventListener('click', () => {
-                audioPlayer.currentTime = Math.max(0, line.time + lyricsOffset);
-            });
-            lyricsLines.appendChild(p);
-        });
-    }
+                if (!acc[label]) acc[label] = [];
+                acc[label].push({ track, idx });
+                return acc;
+            }, {});
 
-    function updateActiveLyricsLine(currentTime) {
-        if (!parsedLyrics.length || !lyricsLines) return;
-        const adjustedTime = currentTime - lyricsOffset;
-        let activeIdx = -1;
-        for (let i = 0; i < parsedLyrics.length; i++) {
-            if (adjustedTime >= parsedLyrics[i].time) {
-                activeIdx = i;
-            } else {
-                break;
+            resultsZone.innerHTML = '';
+            const listWrapper = document.createElement('div');
+            listWrapper.className = 'track-list-wrapper';
+
+            for (const [label, items] of Object.entries(groups)) {
+                const heading = document.createElement('h4');
+                heading.className = 'source-group-heading';
+                heading.textContent = label;
+                listWrapper.appendChild(heading);
+
+                items.forEach(({ track, idx }) => {
+                    listWrapper.appendChild(createTrackRow(track, idx));
+                });
             }
+            resultsZone.appendChild(listWrapper);
+            updateActiveTrackUI();
+        } catch {
+            resultsZone.innerHTML = '<div style="padding: 24px; color: #ef4444;">Ошибка выполнения поиска</div>';
+        }
+    }
+
+    // =========================================================================
+    // Отрисовка списков (Библиотека / Избранное)
+    // =========================================================================
+    function createTrackRow(track, index) {
+        const row = document.createElement('div');
+        const isActive = isSameTrack(currentlyPlayingTrack, track);
+        row.className = `track-row ${isActive ? 'active' : ''}`;
+        row.dataset.index = index;
+
+        const coverSrc = escapeHtml(track.cover_path || '/static/img/default-cover.svg');
+        const durationText = track.duration ? formatTime(track.duration) : '--:--';
+
+        row.innerHTML = `
+            <span class="track-row-index">${index + 1}</span>
+            <img src="${coverSrc}" alt="Cover" class="track-row-cover" onerror="this.src='/static/img/default-cover.svg'">
+            <div class="track-row-titles">
+                <span class="track-row-title">${escapeHtml(track.title || 'Unknown Title')}</span>
+                <span class="track-row-artist">${escapeHtml(track.artist || 'Unknown Artist')}</span>
+            </div>
+            <span class="track-row-album">${escapeHtml(track.album || '-')}</span>
+            <span class="track-row-duration">${durationText}</span>
+            <div class="track-row-actions">
+                <button class="track-like-btn ${track.liked ? 'liked' : ''}" data-id="${track.id || ''}">
+                    <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
+                </button>
+            </div>
+        `;
+
+        row.addEventListener('click', (e) => {
+            if (e.target.closest('.track-like-btn')) return;
+            playTrack(index);
+        });
+        return row;
+    }
+
+    function renderTracklist(tracks) {
+        tracklist.innerHTML = '';
+        if (!tracks || tracks.length === 0) {
+            tracklist.innerHTML = '<div style="padding: 36px; color: var(--text-muted);">Треки не найдены</div>';
+            return;
         }
 
-        const lines = lyricsLines.querySelectorAll('.lyrics-line');
-        lines.forEach((el, idx) => {
-            if (idx === activeIdx) {
-                if (!el.classList.contains('active')) {
-                    el.classList.add('active');
-                    if (lyricsScrollContainer) {
-                        const offsetTop = el.offsetTop;
-                        const containerHeight = lyricsScrollContainer.clientHeight;
-                        lyricsScrollContainer.scrollTo({
-                            top: offsetTop - containerHeight / 2 + el.clientHeight / 2,
-                            behavior: 'smooth'
-                        });
-                    }
-                }
+        playbackQueue.setQueue(tracks);
+        const wrapper = document.createElement('div');
+        wrapper.className = 'track-list-wrapper';
+
+        tracks.forEach((track, index) => {
+            wrapper.appendChild(createTrackRow(track, index));
+        });
+        tracklist.appendChild(wrapper);
+        updateActiveTrackUI();
+    }
+
+    function updateActiveTrackUI() {
+        if (!currentlyPlayingTrack) return;
+        const rows = tracklist.querySelectorAll('.track-row');
+        rows.forEach((el, idx) => {
+            const track = playbackQueue.queue[idx];
+            if (track && isSameTrack(track, currentlyPlayingTrack)) {
+                el.classList.add('active');
             } else {
                 el.classList.remove('active');
             }
         });
     }
 
-    function updateTimingToolbar() {
-        const valEl = document.getElementById('lyrics-timing-val');
-        if (valEl) {
-            valEl.textContent = (lyricsOffset >= 0 ? '+' : '') + lyricsOffset.toFixed(1) + 's';
-        }
-    }
-
-    function createLyricsTimingToolbar() {
-        if (!lyricsLines || document.getElementById('lyrics-timing-toolbar')) return;
-
-        const bar = document.createElement('div');
-        bar.id = 'lyrics-timing-toolbar';
-        bar.className = 'lyrics-timing-toolbar';
-        bar.innerHTML = `
-            <div class="timing-left">
-                <button id="btn-sync-now" class="timing-btn sync-btn" title="Нажмите в момент, когда вокалист начинает петь текущую строчку">
-                    <i class="fas fa-bullseye"></i> Запели сейчас
-                </button>
-            </div>
-            <div class="timing-controls">
-                <span class="timing-title">Сдвиг:</span>
-                <button class="timing-btn" data-step="-1.0">-1s</button>
-                <button class="timing-btn" data-step="-0.5">-0.5s</button>
-                <span id="lyrics-timing-val" class="timing-value">+0.0s</span>
-                <button class="timing-btn" data-step="0.5">+0.5s</button>
-                <button class="timing-btn" data-step="1.0">+1s</button>
-                <button id="btn-sync-reset" class="timing-btn reset-btn" title="Сбросить сдвиг">0s</button>
-            </div>
-        `;
-
-        lyricsLines.parentNode.insertBefore(bar, lyricsLines);
-
-        bar.addEventListener('click', (e) => {
-            const btn = e.target.closest('button');
-            if (!btn || !currentlyPlayingTrack) return;
-
-            if (btn.id === 'btn-sync-now') {
-                const cur = audioPlayer.currentTime;
-                let targetTime = 0;
-                if (parsedLyrics.length > 0) {
-                    const activeEl = lyricsLines.querySelector('.lyrics-line.active');
-                    const idx = activeEl ? parseInt(activeEl.dataset.index, 10) : 0;
-                    targetTime = parsedLyrics[idx]?.time || parsedLyrics[0].time;
-                }
-                const newOffset = Math.max(0, cur - targetTime);
-                setTrackOffset(currentlyPlayingTrack.id, newOffset);
-            } else if (btn.id === 'btn-sync-reset') {
-                setTrackOffset(currentlyPlayingTrack.id, 0.0);
-            } else if (btn.dataset.step) {
-                const step = parseFloat(btn.dataset.step);
-                setTrackOffset(currentlyPlayingTrack.id, lyricsOffset + step);
-            }
-        });
-    }
-
-    // UI Rendering
-    function renderTrackItem(track, index) {
-        const item = document.createElement('div');
-        const isActive = isSameTrack(currentlyPlayingTrack, track);
-        item.className = `track-item ${isActive ? 'active' : ''}`;
-        item.dataset.index = index;
-        if (track.id) item.dataset.id = track.id;
-        
-        const cover = escapeHtml(track.cover_path || '/static/img/default-cover.svg');
-        const duration = track.duration ? formatTime(track.duration) : '--:--';
-
-        item.innerHTML = `
-            <div class="track-rank">${index + 1}</div>
-            <div class="track-info">
-                <img src="${cover}" alt="cover" referrerpolicy="no-referrer" onerror="this.onerror=null;this.src='/static/img/default-cover.svg';">
-                <div class="track-text">
-                    <span class="track-title-name">${escapeHtml(track.title || 'Unknown Title')}</span>
-                    <span class="track-artist-name">${escapeHtml(track.artist || 'Unknown Artist')}</span>
-                </div>
-            </div>
-            <div class="track-album">${escapeHtml(track.album || '-')}</div>
-            <div class="track-duration">${duration}</div>
-            <div class="track-actions">
-                <button class="icon-btn like-btn ${track.liked ? 'liked' : ''}" data-id="${track.id || ''}" data-liked="${Boolean(track.liked)}">
-                    <i class="${track.liked ? 'fas' : 'far'} fa-heart"></i>
-                </button>
-            </div>
-        `;
-
-        item.addEventListener('click', (e) => {
-            if (e.target.closest('.like-btn')) return;
-            playTrack(index);
-        });
-        return item;
-    }
-
-    function updateActiveTrackUI() {
-        if (!currentlyPlayingTrack) return;
-        const items = tracklist.querySelectorAll('.track-item');
-        items.forEach((el, idx) => {
-            const track = playbackQueue.queue[idx];
-            if (track && isSameTrack(track, currentlyPlayingTrack)) {
-                el.classList.add('active');
-                if (!audioPlayer.paused && !audioPlayer.error) {
-                    el.classList.add('playing');
-                } else {
-                    el.classList.remove('playing');
-                }
-            } else {
-                el.classList.remove('active', 'playing');
-            }
-        });
-    }
-
-    function renderTracklist(tracks) {
-        tracklist.innerHTML = '';
-        if (!tracks || tracks.length === 0) {
-            tracklist.innerHTML = '<div class="status-message">Треки не найдены</div>';
-            return;
-        }
-
-        playbackQueue.setQueue(tracks);
-        tracks.forEach((track, index) => {
-            tracklist.appendChild(renderTrackItem(track, index));
-        });
-        updateActiveTrackUI();
-    }
-
-    function renderSearchResults(results) {
-        tracklist.innerHTML = '';
-        if (!results || results.length === 0) {
-            tracklist.innerHTML = '<div class="status-message">Ничего не найдено</div>';
-            return;
-        }
-
-        playbackQueue.setQueue(results);
-
-        const groups = results.reduce((acc, track, idx) => {
-            let label = 'YouTube Music';
-            if (track.source === 'local') label = 'Локально на диске';
-            else if (track.source === 'soundcloud') label = 'SoundCloud';
-
-            if (!acc[label]) acc[label] = [];
-            acc[label].push({ track, idx });
-            return acc;
-        }, {});
-
-        for (const [label, items] of Object.entries(groups)) {
-            const header = document.createElement('div');
-            header.className = 'source-group-title';
-            header.textContent = label;
-            tracklist.appendChild(header);
-
-            items.forEach(({ track, idx }) => {
-                tracklist.appendChild(renderTrackItem(track, idx));
-            });
-        }
-        updateActiveTrackUI();
-    }
-
-    // Playback Core Logic
+    // =========================================================================
+    // Воспроизведение
+    // =========================================================================
     async function playTrack(index) {
         if (index < 0 || index >= playbackQueue.length) return;
         clearTimeout(autoSkipTimer);
         const track = playbackQueue.queue[index];
 
         if (isSameTrack(currentlyPlayingTrack, track) && audioPlayer.src && !audioPlayer.error) {
-            if (audioPlayer.paused) {  
+            if (audioPlayer.paused) {
                 try {
                     await audioPlayer.play();
                 } catch (e) {
                     console.warn("Play failed:", e);
                 }
-            } else {  
-                audioPlayer.pause();  
+            } else {
+                audioPlayer.pause();
             }
             return;
         }
@@ -596,6 +469,7 @@ document.addEventListener('DOMContentLoaded', () => {
         playbackQueue.playAt(index);
         currentlyPlayingTrack = track;
 
+        // Регистрация удалённых треков в БД
         if (!track.id || track.id === -1 || track.id === '-1') {
             try {
                 const res = await fetch('/tracks/remote', {
@@ -608,43 +482,37 @@ document.addEventListener('DOMContentLoaded', () => {
                     track.id = saved.id;
                     currentlyPlayingTrack.id = saved.id;
                 } else {
-                    console.error("Failed to register track: HTTP", res.status);
-                    showToast("⚠️ Ошибка сервера при сохранении трека");
+                    showToast("⚠️ Ошибка регистрации внешнего трека");
                     autoSkipTimer = setTimeout(() => nextTrack(false), 1500);
                     return;
                 }
-            } catch (err) {
-                console.error("Error registering remote track:", err);
+            } catch {
                 showToast("⚠️ Ошибка соединения с сервером");
                 autoSkipTimer = setTimeout(() => nextTrack(false), 1500);
                 return;
             }
         }
 
-        document.querySelectorAll('.track-item').forEach(el => el.classList.remove('active', 'playing'));
-        const activeEl = tracklist.querySelector(`[data-index="${index}"]`);
-        if (activeEl) activeEl.classList.add('active', 'playing');
-
         playerTitle.textContent = track.title || 'Unknown Title';
         playerArtist.textContent = track.artist || 'Unknown Artist';
         playerCover.src = track.cover_path || '/static/img/default-cover.svg';
-        btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
-
-        if (lyricsCover) lyricsCover.src = track.cover_path || '/static/img/default-cover.svg';
-        if (lyricsTitle) lyricsTitle.textContent = track.title || 'Unknown Title';
-        if (lyricsArtist) lyricsArtist.textContent = track.artist || 'Unknown Artist';
+        if (btnLikePlayer) {
+            btnLikePlayer.classList.toggle('liked', Boolean(track.liked));
+            btnLikePlayer.querySelector('i').className = track.liked ? 'fas fa-heart' : 'far fa-heart';
+        }
 
         audioPlayer.src = `/stream/${track.id}`;
         audioPlayer.play().catch(e => {
-            console.warn("Play interrupted or pending stream:", e);
+            console.warn("Play interrupted or pending:", e);
             syncPlayPauseUI(false);
         });
 
         sendHistory(track.id, 'play', 0);
-        loadLyrics(track);
 
         if (currentView === 'wave') {
             renderWaveView();
+        } else {
+            updateActiveTrackUI();
         }
         prefetchWaveIfNeeded();
     }
@@ -703,103 +571,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function updateMuteIcon(isMuted) {
-        if (!volumeIcon) return;
-        if (isMuted) {
-            volumeIcon.className = 'fas fa-volume-mute';
-        } else if (audioPlayer.volume < 0.5) {
-            volumeIcon.className = 'fas fa-volume-down';
-        } else {
-            volumeIcon.className = 'fas fa-volume-up';
-        }
-    }
+    // =========================================================================
+    // Слушатели событий плеера
+    // =========================================================================
+    audioPlayer.addEventListener('play', () => syncPlayPauseUI(true));
+    audioPlayer.addEventListener('pause', () => syncPlayPauseUI(false));
 
-    function loadVolumeSettings() {
-        const vol = localStorage.getItem('player:volume') ?? 70;
-        const muted = localStorage.getItem('player:muted') === 'true';
-        if (volumeRange) volumeRange.value = vol;
-        audioPlayer.volume = vol / 100;
-        audioPlayer.muted = muted;
-        updateMuteIcon(muted);
-    }
-
-    function saveVolumeSettings() {
-        if (!audioPlayer) return;
-        localStorage.setItem('player:volume', Math.round(audioPlayer.volume * 100));
-        localStorage.setItem('player:muted', audioPlayer.muted ? 'true' : 'false');
-    }
-
-    if (volumeRange) {
-        volumeRange.addEventListener('input', (e) => {
-            const val = parseFloat(e.target.value);
-            audioPlayer.volume = val / 100;
-            audioPlayer.muted = false;
-            updateMuteIcon(false);
-            saveVolumeSettings();
-        });
-    }
-
-    if (btnMute) {
-        btnMute.addEventListener('click', () => {
-            audioPlayer.muted = !audioPlayer.muted;
-            updateMuteIcon(audioPlayer.muted);
-            saveVolumeSettings();
-        });
-    }
-
-    if (progressContainer) {
-        progressContainer.addEventListener('click', (e) => {
-            if (!audioPlayer.duration) return;
-            const rect = progressContainer.getBoundingClientRect();
-            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            audioPlayer.currentTime = pos * audioPlayer.duration;
-        });
-    }
-
-    if (lyricsProgressContainer) {
-        lyricsProgressContainer.addEventListener('click', (e) => {
-            if (!audioPlayer.duration) return;
-            const rect = lyricsProgressContainer.getBoundingClientRect();
-            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
-            audioPlayer.currentTime = pos * audioPlayer.duration;
-        });
-    }
+    audioPlayer.addEventListener('error', (e) => {
+        console.error("Ошибка аудиопотока:", e, audioPlayer.error);
+        syncPlayPauseUI(false);
+        showToast("⚠️ Трек недоступен. Переключаем...");
+        clearTimeout(autoSkipTimer);
+        autoSkipTimer = setTimeout(() => nextTrack(false), 1800);
+    });
 
     audioPlayer.addEventListener('timeupdate', () => {
         const cur = audioPlayer.currentTime;
         const dur = audioPlayer.duration || 0;
         if (timeCurrent) timeCurrent.textContent = formatTime(cur);
-        if (lyricsTimeCurrent) lyricsTimeCurrent.textContent = formatTime(cur);
-        if (dur > 0) {
-            const percent = (cur / dur) * 100;
-            if (progressFill) progressFill.style.width = `${percent}%`;
-            if (lyricsProgressFill) lyricsProgressFill.style.width = `${percent}%`;
+        if (dur > 0 && progressFill) {
+            progressFill.style.width = `${(cur / dur) * 100}%`;
         }
-        updateActiveLyricsLine(cur);
     });
 
     audioPlayer.addEventListener('loadedmetadata', () => {
-        const dur = audioPlayer.duration || 0;
-        if (timeTotal) timeTotal.textContent = formatTime(dur);
-        if (lyricsTimeTotal) lyricsTimeTotal.textContent = formatTime(dur);
-    });
-
-    audioPlayer.addEventListener('play', () => {
-        syncPlayPauseUI(true);
-    });
-
-    audioPlayer.addEventListener('pause', () => {
-        syncPlayPauseUI(false);
-    });
-
-    audioPlayer.addEventListener('error', (e) => {
-        console.error("Audio playback error:", e, audioPlayer.error);
-        syncPlayPauseUI(false);
-        showToast("⚠️ Трек недоступен. Переключаем на следующий...");
-        clearTimeout(autoSkipTimer);
-        autoSkipTimer = setTimeout(() => {
-            nextTrack(false);
-        }, 1800);
+        if (timeTotal) timeTotal.textContent = formatTime(audioPlayer.duration || 0);
     });
 
     audioPlayer.addEventListener('ended', () => {
@@ -813,64 +609,76 @@ document.addEventListener('DOMContentLoaded', () => {
     if (btnNext) btnNext.addEventListener('click', () => nextTrack(true));
     if (btnPrev) btnPrev.addEventListener('click', prevTrack);
 
+    if (progressTrack) {
+        progressTrack.addEventListener('click', (e) => {
+            if (!audioPlayer.duration) return;
+            const rect = progressTrack.getBoundingClientRect();
+            const pos = Math.max(0, Math.min(1, (e.clientX - rect.left) / rect.width));
+            audioPlayer.currentTime = pos * audioPlayer.duration;
+        });
+    }
+
+    if (volumeRange) {
+        volumeRange.addEventListener('input', (e) => {
+            const val = parseFloat(e.target.value);
+            audioPlayer.volume = val / 100;
+            audioPlayer.muted = false;
+            if (volumeIcon) volumeIcon.className = val === 0 ? 'fas fa-volume-mute' : 'fas fa-volume-up';
+        });
+    }
+
+    if (btnMute) {
+        btnMute.addEventListener('click', () => {
+            audioPlayer.muted = !audioPlayer.muted;
+            if (volumeIcon) volumeIcon.className = audioPlayer.muted ? 'fas fa-volume-mute' : 'fas fa-volume-up';
+        });
+    }
+
+    // Лайк из нижнего плеера
     if (btnLikePlayer) {
         btnLikePlayer.addEventListener('click', async () => {
-            if (!currentlyPlayingTrack || !currentlyPlayingTrack.id || currentlyPlayingTrack.id === -1 || currentlyPlayingTrack.id === '-1') return;
+            if (!currentlyPlayingTrack || !currentlyPlayingTrack.id || currentlyPlayingTrack.id === -1) return;
             try {
                 const nextLiked = !currentlyPlayingTrack.liked;
                 await toggleLike(currentlyPlayingTrack.id, currentlyPlayingTrack.liked);
                 currentlyPlayingTrack.liked = nextLiked;
+                btnLikePlayer.classList.toggle('liked', nextLiked);
                 btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
-                const itemBtn = tracklist.querySelector(`.like-btn[data-id="${currentlyPlayingTrack.id}"]`);
-                if (itemBtn) {
-                    itemBtn.dataset.liked = nextLiked;
-                    itemBtn.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
-                }
                 if (currentView === 'wave') renderWaveView();
             } catch (err) {
-                console.error('Failed to toggle like:', err);
+                console.error("Ошибка лайка:", err);
             }
         });
     }
 
+    // Лайк из списков
     tracklist.addEventListener('click', async (e) => {
-        const likeBtn = e.target.closest('.like-btn');
+        const likeBtn = e.target.closest('.track-like-btn');
         if (!likeBtn) return;
         e.stopPropagation();
-        e.preventDefault();
         const trackId = likeBtn.dataset.id;
         if (!trackId || trackId === '-1' || trackId === -1) return;
-        const isLiked = likeBtn.dataset.liked === 'true' || likeBtn.dataset.liked === '1';
+        const isLiked = likeBtn.classList.contains('liked');
         try {
             await toggleLike(trackId, isLiked);
             const nextLiked = !isLiked;
-            likeBtn.dataset.liked = nextLiked;
+            likeBtn.classList.toggle('liked', nextLiked);
             likeBtn.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
             if (currentlyPlayingTrack && String(currentlyPlayingTrack.id) === String(trackId)) {
                 currentlyPlayingTrack.liked = nextLiked;
                 if (btnLikePlayer) {
+                    btnLikePlayer.classList.toggle('liked', nextLiked);
                     btnLikePlayer.querySelector('i').className = nextLiked ? 'fas fa-heart' : 'far fa-heart';
                 }
             }
         } catch (err) {
-            console.error('Failed to toggle like:', err);
+            console.error("Ошибка лайка:", err);
         }
     });
 
-    if (playerInfo) {
-        playerInfo.addEventListener('click', (e) => {
-            if (e.target.closest('#btn-like-player')) return;
-            if (lyricsOverlay) lyricsOverlay.classList.remove('hidden');
-        });
-    }
-
-    if (btnCloseLyrics) {
-        btnCloseLyrics.addEventListener('click', () => {
-            if (lyricsOverlay) lyricsOverlay.classList.add('hidden');
-        });
-    }
-
-    // Навигация
+    // =========================================================================
+    // Навигация (Переключение вкладок без прерывания аудио)
+    // =========================================================================
     document.querySelectorAll('.nav-item').forEach(item => {
         item.addEventListener('click', async (e) => {
             e.preventDefault();
@@ -881,18 +689,23 @@ document.addEventListener('DOMContentLoaded', () => {
             item.classList.add('active');
             currentView = view;
 
+            // Управление видимостью нижнего дока через CSS-класс body
+            document.body.className = `view-${view}`;
+
             if (view === 'wave') {
                 renderWaveView();
                 if (!currentlyPlayingTrack) {
                     await initWavePlayback();
                 }
+            } else if (view === 'search') {
+                renderSearchView();
             } else if (view === 'library') {
-                if (viewTitle) viewTitle.textContent = 'Your Library';
+                if (viewTitle) viewTitle.textContent = 'Библиотека';
                 try {
                     const tracks = await fetchTracks();
                     renderTracklist(tracks);
                 } catch {
-                    tracklist.innerHTML = '<div class="status-message">Ошибка загрузки библиотеки</div>';
+                    tracklist.innerHTML = '<div style="padding: 36px; color: #ef4444;">Ошибка загрузки библиотеки</div>';
                 }
             } else if (view === 'favorites') {
                 if (viewTitle) viewTitle.textContent = 'Любимые треки';
@@ -900,72 +713,14 @@ document.addEventListener('DOMContentLoaded', () => {
                     const favs = await fetchFavorites();
                     renderTracklist(favs);
                 } catch {
-                    tracklist.innerHTML = '<div class="status-message">Ошибка загрузки избранного</div>';
+                    tracklist.innerHTML = '<div style="padding: 36px; color: #ef4444;">Ошибка загрузки избранного</div>';
                 }
-            } else if (view === 'search') {
-                const query = lastSearchQuery || (searchInput ? searchInput.value.trim() : '');
-                if (query) {
-                    if (viewTitle) viewTitle.textContent = `Результаты: "${query}"`;
-                    if (searchInput) searchInput.value = query;
-                    if (lastSearchResults && lastSearchResults.length > 0) {
-                        renderSearchResults(lastSearchResults);
-                    } else {
-                        tracklist.innerHTML = '<div class="status-message"><i class="fas fa-spinner fa-spin"></i> Поиск...</div>';
-                        try {
-                            const res = await searchTracks(query);
-                            lastSearchResults = res;
-                            sessionStorage.setItem('lastSearchResults', JSON.stringify(res));
-                            renderSearchResults(res);
-                        } catch {
-                            tracklist.innerHTML = '<div class="status-message">Ошибка поиска</div>';
-                        }
-                    }
-                } else {
-                    if (viewTitle) viewTitle.textContent = 'Search';
-                    tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска</div>';
-                }
-                if (searchInput) searchInput.focus();
             }
         });
     });
 
-    if (searchInput) {
-        if (lastSearchQuery && !searchInput.value) {
-            searchInput.value = lastSearchQuery;
-        }
-        searchInput.addEventListener('input', debounce(async (e) => {
-            const query = e.target.value.trim();
-            lastSearchQuery = query;
-            sessionStorage.setItem('lastSearchQuery', query);
-
-            if (!query) {
-                lastSearchResults = [];
-                sessionStorage.removeItem('lastSearchResults');
-                if (currentView === 'search') {
-                    if (viewTitle) viewTitle.textContent = 'Search';
-                    tracklist.innerHTML = '<div class="status-message">Введите запрос в строку поиска</div>';
-                }
-                return;
-            }
-            try {
-                const results = await searchTracks(query);
-                lastSearchResults = results;
-                sessionStorage.setItem('lastSearchResults', JSON.stringify(results));
-                document.querySelectorAll('.nav-item').forEach(el => {
-                    el.classList.toggle('active', el.dataset.view === 'search');
-                });
-                currentView = 'search';
-                if (viewTitle) viewTitle.textContent = `Результаты: "${query}"`;
-                renderSearchResults(results);
-            } catch (err) {
-                console.error('Search error:', err);
-            }
-        }, 300));
-    }
-
-    createLyricsTimingToolbar();
-    loadVolumeSettings();
+    // Стартовая инициализация
     fetchTracks().then(renderTracklist).catch(() => {
-        tracklist.innerHTML = '<div class="status-message">Ошибка загрузки треков</div>';
+        tracklist.innerHTML = '<div style="padding: 36px; color: var(--text-muted);">Ошибка загрузки медиатеки</div>';
     });
 });
