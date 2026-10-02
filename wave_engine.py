@@ -1,86 +1,112 @@
-from typing import List, Dict, Any
+import asyncio
+from typing import List, Dict, Any, Optional
 from ytmusicapi import YTMusic
 from db import get_db
 
 class WaveEngine:
-    """Engine for generating candidate tracks using YouTube Music radio functionality."""
+    """Движок генерации треков-кандидатов для 'Моей волны' через YouTube Music Radio."""
 
     def __init__(self):
         self.ytmusic = YTMusic()
 
-    async def generate_candidates(self, seed_track_ids: List[int]) -> List[Dict[str, Any]]:
-        """
-        Generates a deduped list of tracks from YouTube Music radio based on seed tracks.
-        Each track is enriched with detailed metadata.
-        """
-        if not seed_track_ids:
-            return []
+    @staticmethod
+    def _parse_duration(duration_str: Optional[str]) -> Optional[float]:
+        """Конвертирует строку вида '3:45' или '1:02:10' в секунды (float)."""
+        if not duration_str or not isinstance(duration_str, str):
+            return None
+        try:
+            parts = duration_str.strip().split(":")
+            seconds = 0.0
+            for part in parts:
+                seconds = seconds * 60 + float(part)
+            return seconds
+        except (ValueError, TypeError):
+            return None
 
+    def _resolve_seed_external_ids(self, seed_track_ids: List[int]) -> List[str]:
+        """
+        Извлекает external_id для сид-треков.
+        Если трек локальный (external_id пуст), ищет соответствие на YouTube по 'артист + название'.
+        """
         conn = get_db()
         try:
-            # Get external_ids for the provided seed tracks
             placeholders = ','.join(['?'] * len(seed_track_ids))
-            query = f"SELECT external_id FROM tracks WHERE id IN ({placeholders})"
+            query = f"SELECT id, artist, title, external_id, source FROM tracks WHERE id IN ({placeholders})"
             seed_rows = conn.execute(query, seed_track_ids).fetchall()
         finally:
             conn.close()
 
-        external_ids = [row["external_id"] for row in seed_rows if row["external_id"]]
+        resolved_ids = []
+        for row in seed_rows:
+            ext_id = row["external_id"]
+            if ext_id:
+                resolved_ids.append(ext_id)
+            elif row["artist"] and row["title"]:
+                try:
+                    q = f"{row['artist']} - {row['title']}"
+                    search_res = self.ytmusic.search(query=q, filter="songs", limit=1)
+                    if search_res and search_res[0].get("videoId"):
+                        resolved_ids.append(search_res[0]["videoId"])
+                except Exception:
+                    continue
+        return resolved_ids
+
+    def _sync_generate_candidates(self, seed_track_ids: List[int]) -> List[Dict[str, Any]]:
+        """Синхронная логика сбора кандидатов (выполняется в отдельном потоке)."""
+        external_ids = self._resolve_seed_external_ids(seed_track_ids)
         if not external_ids:
             return []
 
-        unique_candidates = {}
+        seed_set = set(external_ids)
+        unique_candidates: Dict[str, Dict[str, Any]] = {}
 
         for ext_id in external_ids:
             try:
-                # Fetch the radio playlist starting from this video
-                playlist = self.ytmusic.get_watch_playlist(ext_id)
-                contents = playlist.get('contents', [])
+                playlist = self.ytmusic.get_watch_playlist(videoId=ext_id, radio=True, limit=25)
+                items = playlist.get('tracks') or playlist.get('contents') or []
 
-                for item in contents:
-                    # Extract videoId/browseId to identify the song
-                    v_id = item.get('videoId') or item.get('browseId')
-                    if not v_id or v_id in unique_candidates:
+                for item in items:
+                    v_id = item.get('videoId')
+                    if not v_id or v_id in unique_candidates or v_id in seed_set:
                         continue
 
-                    # Extract preliminary metadata from playlist item
                     title = item.get('title')
-                    artists_info = item.get('artists', [])
-                    artist_name = artists_info[0].get('name') if artists_info else None
-                    album_info = item.get('album', {})
-                    album_name = album_info.get('name') if album_info else None
-                    
-                    thumbnails = item.get('thumbnails', [])
-                    cover_url = thumbnails[-1]['url'] if thumbnails else None
+                    if not title:
+                        continue
+
+                    artists = item.get('artists', [])
+                    artist_name = artists[0].get('name') if artists and isinstance(artists, list) else None
+
+                    album_obj = item.get('album') or {}
+                    album_name = album_obj.get('name') if isinstance(album_obj, dict) else None
+
+                    thumbnails = item.get('thumbnail') or item.get('thumbnails') or []
+                    cover_url = thumbnails[-1]['url'] if thumbnails and isinstance(thumbnails, list) else None
+
+                    length_raw = item.get('length')
+                    duration_sec = self._parse_duration(length_raw)
 
                     unique_candidates[v_id] = {
                         "external_id": v_id,
+                        "path": f"https://www.youtube.com/watch?v={v_id}",
                         "title": title,
-                        "artist": artist_name,
-                        "album": album_name,
+                        "artist": artist_name or "Unknown Artist",
+                        "album": album_name or "-",
                         "source": "remote",
                         "cover_path": cover_url,
-                        "duration": None
+                        "duration": duration_sec
                     }
-            except Exception as e:
-                # If radio is unavailable for a specific seed, move to the next
+            except Exception:
                 continue
 
-        final_results = []
-        # Enrich candidates with full metadata via get_song
-        for v_id, info in unique_candidates.items():
-            try:
-                song_meta = self.ytmusic.get_song(v_id)
-                info.update({
-                    "title": song_meta.get("title"),
-                    "artist": song_meta.get("artists", [{}])[0].get("name") if song_meta.get("artists") else None,
-                    "album": song_meta.get("album", {}).get("name") if song_meta.get("album") else None,
-                    "duration": song_meta.get("duration"),
-                })
-                final_results.append(info)
-            except Exception:
-                # Fallback to playlist metadata if deep fetch fails
-                if info["title"]:
-                    final_results.append(info)
+        return list(unique_candidates.values())
 
-        return final_results
+    async def generate_candidates(self, seed_track_ids: List[int]) -> List[Dict[str, Any]]:
+        """
+        Асинхронная точка входа.
+        Запускает блокирующие сетевые вызовы в фоновом потоке, не вешая Event Loop сервера.
+        """
+        if not seed_track_ids:
+            return []
+
+        return await asyncio.to_thread(self._sync_generate_candidates, seed_track_ids)
