@@ -34,7 +34,7 @@
 - [x] history: POST /history {track_id, event: play|skip|finish}; "skip" is only accepted if elapsed_seconds < 15, otherwise rejected with 400
 - [x] history: GET /history?limit=80 — most recent play/finish events joined with track metadata, ordered by timestamp desc
 
-- [ ] wave: WaveEngine.generate_candidates(seed_track_ids) using ytmusicapi's get_watch_playlist radio per seed track, deduped, returned with source metadata attached
+- [x] wave: WaveEngine.generate_candidates(seed_track_ids) using ytmusicapi's get_watch_playlist radio per seed track, deduped, returned with source metadata attached
 - [ ] wave: candidate filter excluding track_ids played within the last N days OR skipped 2+ times, applied before scoring
 - [ ] wave: hybrid scorer mixing 60% remote radio candidates / 40% locally-liked library tracks into one ranked batch, mix ratio as a named constant
 - [ ] wave: skip-streak adaptation — track consecutive skips in session state; on the 2nd consecutive skip, drop the current genre cluster from the candidate pool and inject one known-liked local track as a "safe" pick
