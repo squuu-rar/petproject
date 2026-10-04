@@ -3,6 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="color-scheme" content="dark">
+    <meta name="theme-color" content="#0a0b0e">
     <title>Music Player</title>
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
@@ -13,7 +15,7 @@
             <i class="fas fa-compact-disc fa-spin-pulse"></i>
             <span>MusicStream</span>
         </div>
-        <nav class="sidebar-nav">
+        <nav class="sidebar-nav" aria-label="Разделы">
             <a href="#" class="nav-item active" data-view="library"><i class="fas fa-home"></i> Библиотека</a>
             <a href="#" class="nav-item" data-view="wave"><i class="fas fa-water"></i> Моя Волна</a>
             <a href="#" class="nav-item" data-view="search"><i class="fas fa-search"></i> Поиск</a>
@@ -25,27 +27,27 @@
         <header class="content-header">
             <h1 class="view-title" id="view-title">Библиотека</h1>
         </header>
-        <section id="tracklist"></section>
+        <section id="tracklist" aria-live="polite"></section>
     </main>
 
     <!-- Нижний плеер (скрывается в режиме волны) -->
-    <footer class="player-dock" id="player-dock">
+    <footer class="player-dock" id="player-dock" aria-label="Плеер">
         <div class="player-dock-left player-info">
-            <img src="/static/img/default-cover.svg" alt="Cover" class="player-dock-cover" id="player-cover">
+            <img src="/static/img/default-cover.svg" alt="" class="player-dock-cover" id="player-cover">
             <div class="player-dock-titles">
                 <span class="player-dock-title" id="player-title">Трек не выбран</span>
                 <span class="player-dock-artist" id="player-artist">—</span>
             </div>
-            <button class="track-like-btn" id="btn-like-player">
+            <button class="track-like-btn" id="btn-like-player" aria-label="Нравится">
                 <i class="far fa-heart"></i>
             </button>
         </div>
 
         <div class="player-dock-center">
             <div class="player-controls-row">
-                <button class="control-btn" id="btn-prev"><i class="fas fa-backward-step"></i></button>
-                <button class="control-btn control-btn-play" id="btn-play"><i class="fas fa-play-circle"></i></button>
-                <button class="control-btn" id="btn-next"><i class="fas fa-forward-step"></i></button>
+                <button class="control-btn" id="btn-prev" aria-label="Предыдущий трек"><i class="fas fa-backward-step"></i></button>
+                <button class="control-btn control-btn-play" id="btn-play" aria-label="Воспроизведение / пауза"><i class="fas fa-play-circle"></i></button>
+                <button class="control-btn" id="btn-next" aria-label="Следующий трек"><i class="fas fa-forward-step"></i></button>
             </div>
             <div class="player-progress-container">
                 <span class="progress-time" id="time-current">0:00</span>
@@ -57,8 +59,8 @@
         </div>
 
         <div class="player-dock-right">
-            <button class="control-btn" id="btn-mute"><i class="fas fa-volume-up"></i></button>
-            <input type="range" class="volume-bar" id="volume-range" min="0" max="100" value="70">
+            <button class="control-btn" id="btn-mute" aria-label="Выключить звук"><i class="fas fa-volume-high"></i></button>
+            <input type="range" class="volume-bar" id="volume-range" min="0" max="100" value="70" aria-label="Громкость">
         </div>
     </footer>
 

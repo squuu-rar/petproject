@@ -12,10 +12,17 @@ class PlaybackQueue {
                 (t.id && current.id && t.id !== -1 && t.id !== '-1' && t.id === current.id) || 
                 (t.title === current.title && t.artist === current.artist)
             );
-            this.currentIndex = newIdx;
+            this.currentIndex = newIdx !== -1 ? newIdx : 0;
         } else {
             this.currentIndex = -1;
         }
+    }
+
+    appendTracks(newTracks) {
+        if (!Array.isArray(newTracks) || newTracks.length === 0) return;
+        const existing = new Set(this.queue.map(t => (t.external_id || t.path || t.id)));
+        const toAdd = newTracks.filter(t => !existing.has(t.external_id || t.path || t.id));
+        this.queue.push(...toAdd);
     }
 
     next() {

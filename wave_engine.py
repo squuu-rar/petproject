@@ -34,30 +34,55 @@ class WaveEngine:
         finally:
             conn.close()
 
-    def _search_youtube_stream(self, artist: str, title: str) -> Optional[Dict[str, Any]]:
-        query = f"{artist} - {title}"
+    def _search_youtube_stream(self, target_artist: str, target_title: str) -> Optional[Dict[str, Any]]:
+        """Ищет трек строго по связке артист + песня с обязательной валидацией исполнителя."""
+        # Кавычки для артиста гарантируют, что YouTube не проигнорирует имя группы
+        query = f'"{target_artist}" {target_title}'
         try:
-            res = self.ytmusic.search(query=query, filter="songs", limit=1)
+            res = self.ytmusic.search(query=query, filter="songs", limit=3)
+            if not res:
+                # Мягкий поиск без кавычек
+                res = self.ytmusic.search(query=f"{target_artist} {target_title}", filter="songs", limit=3)
             if not res:
                 return None
-            item = res[0]
-            v_id = item.get("videoId")
+
+            target_artist_lower = target_artist.lower().strip()
+            best_match = None
+
+            for item in res:
+                v_id = item.get("videoId")
+                if not v_id:
+                    continue
+
+                artists = item.get("artists", [])
+                item_artist = (artists[0].get("name") if artists else "").lower().strip()
+
+                # Проверяем, что в выдаче действительно нужный исполнитель
+                if target_artist_lower in item_artist or item_artist in target_artist_lower:
+                    best_match = item
+                    break
+
+            if not best_match:
+                # Если ни один из 3 результатов не соответствует исполнителю — отбрасываем
+                return None
+
+            v_id = best_match.get("videoId")
             if not v_id:
                 return None
 
-            artists = item.get("artists", [])
-            artist_name = artists[0].get("name") if artists else artist
-            album_info = item.get("album") or {}
+            artists = best_match.get("artists", [])
+            artist_name = artists[0].get("name") if artists else target_artist
+            album_info = best_match.get("album") or {}
             album_name = album_info.get("name") if isinstance(album_info, dict) else "-"
-            thumbs = item.get("thumbnails", [])
+            thumbs = best_match.get("thumbnails", [])
             cover_url = thumbs[-1]["url"] if thumbs else None
-            dur = self._parse_duration(item.get("duration"))
+            dur = self._parse_duration(best_match.get("duration"))
 
             return {
                 "id": -1,
                 "external_id": v_id,
                 "path": f"https://www.youtube.com/watch?v={v_id}",
-                "title": item.get("title") or title,
+                "title": best_match.get("title") or target_title,
                 "artist": artist_name,
                 "album": album_name,
                 "genre": "Wave (Last.fm)",
@@ -73,6 +98,50 @@ class WaveEngine:
         except Exception:
             return None
 
+    async def _get_similar_by_artist(self, artist: str, forbidden_titles: set) -> List[Dict[str, str]]:
+        """Находит похожих артистов в Last.fm и берёт их лучшие треки."""
+        if not artist or not self.lastfm.api_key:
+            return []
+
+        def _fetch():
+            # 1. Запрашиваем 5 похожих групп
+            data = self.lastfm._sync_request({
+                "method": "artist.getsimilar",
+                "artist": artist,
+                "limit": 5,
+                "autocorrect": 1
+            })
+            similar_artists = data.get("similarartists", {}).get("artist", [])
+            if isinstance(similar_artists, dict):
+                similar_artists = [similar_artists]
+
+            recommendations = []
+            for sim in similar_artists:
+                sim_name = sim.get("name")
+                if not sim_name or sim_name.lower() == artist.lower():
+                    continue
+
+                # 2. Забираем топ-2 главных трека этой похожей группы
+                top_data = self.lastfm._sync_request({
+                    "method": "artist.gettoptracks",
+                    "artist": sim_name,
+                    "limit": 2,
+                    "autocorrect": 1
+                })
+                tracks = top_data.get("toptracks", {}).get("track", [])
+                if isinstance(tracks, dict):
+                    tracks = [tracks]
+
+                for t in tracks:
+                    t_title = t.get("name")
+                    # Защита от дублей названий: не берем треки с совпадающим с сидом названием
+                    if t_title and t_title.lower() not in forbidden_titles:
+                        recommendations.append({"artist": sim_name, "title": t_title})
+
+            return recommendations
+
+        return await asyncio.to_thread(_fetch)
+
     async def generate_candidates(self, seed_track_ids: List[int]) -> List[Dict[str, Any]]:
         if not seed_track_ids:
             return []
@@ -82,19 +151,29 @@ class WaveEngine:
             return []
 
         seed_ext_ids = {s["external_id"] for s in seeds if s.get("external_id")}
+        seed_titles = {s["title"].lower().strip() for s in seeds if s.get("title")}
         blocked_ids = seed_ext_ids | await asyncio.to_thread(get_wave_exclusions)
 
         sem = asyncio.Semaphore(self.MAX_PARALLEL_SEARCHES)
 
-        async def resolve(sim: Dict[str, str]) -> Optional[Dict[str, Any]]:
+        async def resolve(item: Dict[str, str]) -> Optional[Dict[str, Any]]:
             async with sem:
-                return await asyncio.to_thread(self._search_youtube_stream, sim["artist"], sim["title"])
+                return await asyncio.to_thread(self._search_youtube_stream, item["artist"], item["title"])
 
-        async def similar_for_seed(seed: Dict[str, Any]) -> List[Dict[str, Any]]:
-            similar = await self.lastfm.get_similar_tracks(seed["artist"], seed["title"], limit=4)
-            resolved = await asyncio.gather(*(resolve(sim) for sim in similar), return_exceptions=True)
-            return [r for r in resolved if isinstance(r, dict)]
+        # 1. Рекомендации по графу похожих исполнителей Last.fm
+        candidate_tasks = []
+        for s in seeds[:3]:
+            if s.get("artist"):
+                candidate_tasks.append(self._get_similar_by_artist(s["artist"], seed_titles))
 
+        gathered_groups = await asyncio.gather(*candidate_tasks, return_exceptions=True)
+        raw_candidates = [t for group in gathered_groups if isinstance(group, list) for t in group]
+
+        # 2. Параллельный поиск аудиопотоков для найденных треков
+        resolved = await asyncio.gather(*(resolve(c) for c in raw_candidates), return_exceptions=True)
+        lastfm_tracks = [r for r in resolved if isinstance(r, dict)]
+
+        # 3. Дополнительный фоллбэк: YouTube Music Radio
         def get_yt_radio() -> List[Dict[str, Any]]:
             found: List[Dict[str, Any]] = []
             for s in seeds[:2]:
@@ -102,7 +181,7 @@ class WaveEngine:
                 if not ext_id:
                     continue
                 try:
-                    playlist = self.ytmusic.get_watch_playlist(videoId=ext_id, radio=True, limit=10)
+                    playlist = self.ytmusic.get_watch_playlist(videoId=ext_id, radio=True, limit=8)
                 except Exception:
                     continue
                 items = playlist.get("tracks") or playlist.get("contents") or []
@@ -111,9 +190,11 @@ class WaveEngine:
                     title = item.get("title")
                     if not v_id or not title:
                         continue
+                    # Отсекаем треки с тем же самым названием
+                    if title.lower().strip() in seed_titles:
+                        continue
                     artists = item.get("artists", [])
                     artist_name = artists[0].get("name") if artists else "Unknown Artist"
-                    album = item.get("album", {}).get("name") if item.get("album") else "-"
                     thumbs = item.get("thumbnail") or item.get("thumbnails") or []
                     found.append({
                         "id": -1,
@@ -121,7 +202,7 @@ class WaveEngine:
                         "path": f"https://www.youtube.com/watch?v={v_id}",
                         "title": title,
                         "artist": artist_name,
-                        "album": album,
+                        "album": item.get("album", {}).get("name") if item.get("album") else "-",
                         "genre": "Wave (Radio)",
                         "year": None,
                         "track_number": None,
@@ -134,18 +215,12 @@ class WaveEngine:
                     })
             return found
 
-        radio_task = asyncio.create_task(asyncio.to_thread(get_yt_radio))
-        lastfm_groups = await asyncio.gather(
-            *(similar_for_seed(s) for s in seeds[:3] if s.get("artist") and s.get("title")),
-            return_exceptions=True,
-        )
         try:
-            radio_tracks = await radio_task
+            radio_tracks = await asyncio.to_thread(get_yt_radio)
         except Exception:
             radio_tracks = []
 
-        lastfm_tracks = [t for group in lastfm_groups if isinstance(group, list) for t in group]
-
+        # Чередуем похожие группы Last.fm и радио YouTube
         merged: List[Dict[str, Any]] = []
         for i in range(max(len(lastfm_tracks), len(radio_tracks))):
             if i < len(lastfm_tracks):
@@ -166,13 +241,29 @@ class WaveEngine:
         conn = get_db()
         try:
             recent = conn.execute("""
-                SELECT track_id FROM history 
-                WHERE event IN ('play', 'finish') ORDER BY timestamp DESC LIMIT 2
+                SELECT track_id FROM history h
+                JOIN tracks t ON t.id = h.track_id
+                WHERE h.event IN ('play', 'finish') 
+                  AND t.artist IS NOT NULL 
+                  AND LENGTH(t.title) > 2
+                ORDER BY h.timestamp DESC LIMIT 2
             """).fetchall()
-            liked = conn.execute("SELECT id as track_id FROM tracks WHERE liked = 1 ORDER BY RANDOM() LIMIT 2").fetchall()
+
+            liked = conn.execute("""
+                SELECT id as track_id FROM tracks 
+                WHERE liked = 1 
+                  AND artist IS NOT NULL 
+                  AND LENGTH(title) > 2
+                ORDER BY RANDOM() LIMIT 2
+            """).fetchall()
+
             raw_seeds = [r["track_id"] for r in (list(recent) + list(liked))]
             if not raw_seeds:
-                fallback = conn.execute("SELECT id as track_id FROM tracks ORDER BY id DESC LIMIT 3").fetchall()
+                fallback = conn.execute("""
+                    SELECT id as track_id FROM tracks 
+                    WHERE artist IS NOT NULL AND LENGTH(title) > 2 
+                    ORDER BY id DESC LIMIT 2
+                """).fetchall()
                 raw_seeds = [r["track_id"] for r in fallback]
         finally:
             conn.close()

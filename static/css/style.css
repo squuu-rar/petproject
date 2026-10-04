@@ -24,6 +24,7 @@ body {
     color: var(--text-primary);
     display: flex;
     height: 100vh;
+    height: 100dvh;
     overflow: hidden;
 }
 
@@ -99,10 +100,6 @@ body {
     background: radial-gradient(circle at 80% 20%, rgba(255, 204, 0, 0.03), transparent 60%);
 }
 
-body.view-wave .main-content {
-    padding-bottom: 0;
-}
-
 .content-header {
     padding: 24px 36px 12px 36px;
 }
@@ -112,137 +109,283 @@ body.view-wave .main-content {
     font-weight: 700;
 }
 
+
+
 /* ==========================================================================
-   Сцена «Моя волна» (Инспирировано Яндекс Музыкой)
+   Общие мелочи
    ========================================================================== */
-.wave-screen {
+[hidden] { display: none !important; }
+
+button { font-family: inherit; }
+
+button:focus-visible,
+.nav-item:focus-visible,
+input:focus-visible {
+    outline: 2px solid var(--accent);
+    outline-offset: 2px;
+}
+
+.main-content::-webkit-scrollbar { width: 10px; }
+.main-content::-webkit-scrollbar-thumb {
+    background: rgba(255, 255, 255, 0.12);
+    border-radius: 10px;
+    border: 2px solid transparent;
+    background-clip: padding-box;
+}
+
+#tracklist {
+    flex: 1;
     display: flex;
     flex-direction: column;
-    align-items: center;
-    justify-content: center;
-    min-height: calc(100vh - 40px);
-    position: relative;
-    overflow: hidden;
-    text-align: center;
-    padding: 20px;
+    min-height: 0;
 }
 
-.wave-orb-wrapper {
-    position: relative;
-    width: 380px;
-    height: 380px;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    margin-bottom: 28px;
+/* В «Волне» и «Поиске» свой заголовок не нужен: у экрана своя композиция */
+body.view-wave .content-header,
+body.view-search .content-header { display: none; }
+
+body.view-wave .main-content {
+    padding-bottom: 0;
+    background: #07080b;
 }
 
-.wave-orb-canvas {
-    position: absolute;
-    width: 320px;
-    height: 320px;
-    border-radius: 50%;
-    background: radial-gradient(circle at 30% 30%, #ffcc00, #ff0055, #7928ca, #ff5500);
-    background-size: 200% 200%;
-    filter: blur(40px);
-    opacity: 0.75;
-    animation: waveMorph 8s ease-in-out infinite alternate, waveRotate 16s linear infinite;
-    pointer-events: none;
-    z-index: 1;
-}
-
-.wave-screen.playing .wave-orb-canvas {
-    opacity: 0.95;
-    filter: blur(34px);
-    animation: waveMorph 4s ease-in-out infinite alternate, waveRotate 9s linear infinite;
-}
-
-@keyframes waveMorph {
-    0% { transform: scale(0.92); border-radius: 40% 60% 70% 30% / 40% 50% 60% 50%; }
-    50% { transform: scale(1.08); border-radius: 60% 40% 30% 70% / 50% 60% 30% 60%; }
-    100% { transform: scale(0.96); border-radius: 35% 65% 55% 45% / 45% 55% 45% 55%; }
-}
-
-@keyframes waveRotate {
-    0% { filter: hue-rotate(0deg) blur(34px); }
-    100% { filter: hue-rotate(360deg) blur(34px); }
-}
-
-.wave-track-preview-container {
-    position: relative;
-    z-index: 2;
-    width: 170px;
-    height: 170px;
-    border-radius: 16px;
-    overflow: hidden;
-    box-shadow: 0 16px 40px rgba(0, 0, 0, 0.7), 0 0 24px rgba(255, 204, 0, 0.2);
-    border: 1px solid rgba(255, 255, 255, 0.15);
-    background: #14171f;
-}
-
-.wave-track-preview-img {
-    width: 100%;
-    height: 100%;
-    object-fit: cover;
-    transition: transform 0.4s ease;
-}
-
-.wave-screen.playing .wave-track-preview-img {
-    transform: scale(1.03);
-}
-
-.wave-capsule {
-    display: inline-flex;
-    align-items: center;
-    gap: 14px;
-    background: var(--glass-bg);
-    backdrop-filter: blur(20px);
+/* ==========================================================================
+   Toast
+   ========================================================================== */
+.toast {
+    position: fixed;
+    bottom: 104px;
+    left: 50%;
+    transform: translateX(-50%);
+    background: rgba(18, 20, 26, 0.95);
+    color: var(--accent);
     padding: 10px 24px;
-    border-radius: 500px;
-    margin-bottom: 24px;
-    border: 1px solid var(--glass-border);
-    max-width: 85%;
-    z-index: 3;
-    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.4);
-}
-
-.wave-capsule-text {
-    font-size: 1rem;
+    border-radius: 24px;
+    font-size: 14px;
     font-weight: 600;
-    color: var(--text-primary);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    max-width: 420px;
+    z-index: 9999;
+    pointer-events: none;
+    opacity: 0;
+    transition: opacity 0.25s ease;
+    border: 1px solid var(--glass-border);
+    box-shadow: 0 8px 32px rgba(0, 0, 0, 0.6);
+    max-width: calc(100vw - 48px);
+    text-align: center;
 }
 
-.wave-capsule-btn {
-    background: transparent;
-    border: none;
-    color: var(--text-muted);
-    font-size: 1.15rem;
-    cursor: pointer;
-    transition: all 0.2s ease;
+.toast.visible { opacity: 1; }
+body.view-wave .toast { bottom: 32px; }
+
+/* ==========================================================================
+   Сцена «Моя волна» — по мотивам Яндекс Музыки: крупный исполнитель,
+   превью обложки, капсула с названием, и никакого дубля плеера снизу.
+   ========================================================================== */
+.wave-screen {
+    position: relative;
+    flex: 1;
+    min-height: 100vh;
+    min-height: 100dvh;
     display: flex;
     align-items: center;
     justify-content: center;
+    padding: 32px 24px;
+    overflow: hidden;
+    isolation: isolate;
+    text-align: center;
 }
 
-.wave-capsule-btn:hover {
-    color: var(--text-primary);
+/* Размытая обложка текущего трека как фон */
+.wave-backdrop {
+    position: absolute;
+    inset: -80px;
+    z-index: -3;
+    background-size: cover;
+    background-position: center;
+    filter: blur(64px) saturate(1.6) brightness(0.75);
+    opacity: 0.7;
     transform: scale(1.15);
 }
 
-.wave-capsule-btn.liked {
-    color: var(--accent-secondary);
+/* Два мягких светящихся пятна палитры приложения */
+.wave-glow {
+    position: absolute;
+    inset: 0;
+    z-index: -2;
+    overflow: hidden;
+    pointer-events: none;
 }
 
-.wave-controls {
+.wave-glow::before,
+.wave-glow::after {
+    content: "";
+    position: absolute;
+    width: 62vmax;
+    height: 62vmax;
+    border-radius: 50%;
+    filter: blur(80px);
+    opacity: 0.32;
+    will-change: transform;
+}
+
+.wave-glow::before {
+    left: -18vmax;
+    top: -24vmax;
+    background: radial-gradient(circle at 40% 40%, var(--accent), transparent 62%);
+    animation: waveDriftA 20s ease-in-out infinite alternate;
+}
+
+.wave-glow::after {
+    right: -22vmax;
+    bottom: -28vmax;
+    background: radial-gradient(circle at 60% 60%, var(--accent-secondary), #7928ca 45%, transparent 68%);
+    animation: waveDriftB 24s ease-in-out infinite alternate;
+}
+
+.wave-screen.playing .wave-glow::before { animation-duration: 10s; }
+.wave-screen.playing .wave-glow::after { animation-duration: 12s; }
+
+@keyframes waveDriftA {
+    from { transform: translate3d(0, 0, 0) scale(1); }
+    to   { transform: translate3d(14vmax, 10vmax, 0) scale(1.18); }
+}
+
+@keyframes waveDriftB {
+    from { transform: translate3d(0, 0, 0) scale(1.1); }
+    to   { transform: translate3d(-12vmax, -8vmax, 0) scale(0.92); }
+}
+
+.wave-screen::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    z-index: -1;
+    pointer-events: none;
+    background: linear-gradient(to bottom, rgba(7, 8, 11, 0.55), rgba(7, 8, 11, 0.15) 42%, rgba(7, 8, 11, 0.72));
+}
+
+.wave-stage {
+    width: min(720px, 100%);
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 18px;
+}
+
+.wave-stage.swap { animation: waveSwap 0.45s ease; }
+
+@keyframes waveSwap {
+    from { opacity: 0; transform: translateY(10px); }
+    to   { opacity: 1; transform: none; }
+}
+
+.wave-label {
+    font-size: 0.8rem;
+    letter-spacing: 0.18em;
+    text-transform: uppercase;
+    font-weight: 700;
+    color: var(--accent);
+}
+
+.wave-artist {
+    max-width: 100%;
+    font-size: clamp(2.4rem, 7vw, 5.2rem);
+    line-height: 1.04;
+    font-weight: 900;
+    letter-spacing: -0.02em;
+    overflow-wrap: anywhere;
+    text-wrap: balance;
+    display: -webkit-box;
+    -webkit-line-clamp: 2;
+    -webkit-box-orient: vertical;
+    overflow: hidden;
+}
+
+.wave-cover-btn {
+    position: relative;
+    width: 132px;
+    height: 132px;
+    padding: 0;
+    border-radius: 18px;
+    border: 1px solid rgba(255, 255, 255, 0.18);
+    overflow: hidden;
+    cursor: pointer;
+    background: #14171f;
+    box-shadow: 0 18px 50px rgba(0, 0, 0, 0.65), 0 0 40px rgba(255, 204, 0, 0.18);
+    transition: transform 0.3s ease;
+}
+
+.wave-screen.playing .wave-cover-btn { transform: scale(1.05); }
+
+.wave-cover-btn img {
+    display: block;
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+}
+
+.wave-actions {
     display: flex;
     align-items: center;
-    gap: 24px;
-    margin-bottom: 20px;
-    z-index: 3;
+    gap: 10px;
+    width: 100%;
+    margin-top: 6px;
+}
+
+.wave-round {
+    flex: 0 0 auto;
+    width: 48px;
+    height: 48px;
+    border-radius: 50%;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    color: var(--text-primary);
+    backdrop-filter: blur(16px);
+    font-size: 1.05rem;
+    cursor: pointer;
+    transition: transform 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+}
+
+.wave-round:hover { transform: scale(1.08); background: rgba(255, 255, 255, 0.14); }
+.wave-round.liked { color: var(--accent-secondary); }
+
+.wave-capsule {
+    flex: 1;
+    min-width: 0;
+    height: 48px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 0 22px;
+    border-radius: 500px;
+    background: var(--glass-bg);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(16px);
+    font-weight: 700;
+    font-size: 1.05rem;
+}
+
+.wave-capsule span {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.wave-progress {
+    width: 100%;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    margin-top: 2px;
+}
+
+.wave-progress .progress-time { min-width: 38px; }
+.wave-progress .progress-track { background: rgba(255, 255, 255, 0.18); }
+
+.wave-transport {
+    display: flex;
+    align-items: center;
+    gap: 28px;
+    margin-top: 4px;
 }
 
 .wave-btn-circle {
@@ -261,61 +404,90 @@ body.view-wave .main-content {
     box-shadow: 0 10px 30px rgba(255, 204, 0, 0.35);
 }
 
-.wave-btn-circle:hover {
-    transform: scale(1.08);
-    background: var(--accent-hover);
-}
+.wave-btn-circle:hover { transform: scale(1.08); background: var(--accent-hover); }
 
 .wave-btn-side {
     background: transparent;
     border: none;
-    color: var(--text-muted);
+    color: rgba(255, 255, 255, 0.75);
     font-size: 1.4rem;
     cursor: pointer;
     transition: all 0.2s ease;
 }
 
-.wave-btn-side:hover {
-    color: var(--text-primary);
-    transform: scale(1.15);
-}
+.wave-btn-side:hover { color: var(--text-primary); transform: scale(1.15); }
 
-.wave-footer-note {
-    font-size: 0.85rem;
-    color: var(--text-muted);
+.wave-status {
     display: flex;
     align-items: center;
     gap: 8px;
-    z-index: 3;
+    min-height: 22px;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+}
+
+.wave-status i { color: var(--accent); }
+
+.wave-shake {
+    background: transparent;
+    border: 1px solid var(--glass-border);
+    color: var(--text-primary);
+    padding: 8px 18px;
+    border-radius: 500px;
+    font-weight: 600;
+    font-size: 0.9rem;
+    cursor: pointer;
+    transition: background-color 0.2s ease, border-color 0.2s ease;
+}
+
+.wave-shake:hover { background: var(--glass-bg); border-color: rgba(255, 255, 255, 0.3); }
+
+/* Экран до запуска волны */
+.wave-idle-title {
+    font-size: clamp(2.4rem, 7vw, 4.6rem);
+    font-weight: 900;
+    letter-spacing: -0.02em;
+}
+
+.wave-idle-note {
+    color: var(--text-muted);
+    font-size: 0.95rem;
 }
 
 /* ==========================================================================
-   Экран поиска и полок категорий
+   Поиск — по мотивам Яндекс Музыки: вытянутая строка, вкладки-таблетки,
+   плитки-папки, компактные карточки и ряд подборок.
    ========================================================================== */
-.search-view-container {
-    padding: 24px 36px;
+.search-view {
+    padding: 28px 36px 48px;
     display: flex;
     flex-direction: column;
-    gap: 28px;
+    gap: 26px;
 }
 
-.search-input-wrapper {
+.search-bar {
     position: relative;
-    max-width: 680px;
     width: 100%;
 }
 
 .search-input-field {
     width: 100%;
-    padding: 14px 20px 14px 48px;
+    height: 54px;
+    padding: 0 54px 0 56px;
     border-radius: 500px;
     border: 1px solid var(--border-color);
     background-color: var(--bg-surface);
     color: var(--text-primary);
-    font-size: 1rem;
+    font-size: 1.02rem;
     outline: none;
     transition: border-color 0.2s ease, background-color 0.2s ease;
+    -webkit-appearance: none;
+    appearance: none;
 }
+
+.search-input-field:focus-visible { outline: none; }
+.search-input-field::-webkit-search-cancel-button { display: none; }
+.search-input-field::placeholder { color: var(--text-muted); }
 
 .search-input-field:focus {
     border-color: var(--accent);
@@ -324,86 +496,270 @@ body.view-wave .main-content {
 
 .search-input-icon {
     position: absolute;
-    left: 20px;
+    left: 22px;
     top: 50%;
     transform: translateY(-50%);
     color: var(--text-muted);
+    pointer-events: none;
 }
 
-.search-chips {
-    display: flex;
-    gap: 10px;
-    margin-top: 14px;
-    flex-wrap: wrap;
+.search-clear {
+    position: absolute;
+    right: 14px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 32px;
+    height: 32px;
+    border-radius: 50%;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    cursor: pointer;
 }
+
+.search-clear:hover { color: var(--text-primary); background: var(--glass-bg); }
+
+.search-tabs { display: flex; gap: 6px; }
+.search-view.has-query .search-tabs { display: none; }
+
+.search-tab {
+    padding: 10px 22px;
+    border-radius: 500px;
+    border: none;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 0.95rem;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background-color 0.15s ease, color 0.15s ease;
+}
+
+.search-tab:hover { color: var(--text-primary); }
+
+.search-tab.active {
+    background: var(--glass-bg);
+    color: var(--text-primary);
+}
+
+.search-zone {
+    display: flex;
+    flex-direction: column;
+    gap: 36px;
+    min-width: 0;
+}
+
+.section-title {
+    font-size: 1.5rem;
+    font-weight: 800;
+    margin-bottom: 16px;
+}
+
+/* Плитки-«папки» с вкладкой сверху */
+.tile-row {
+    display: flex;
+    gap: 28px;
+    overflow-x: auto;
+    padding: 12px 4px 8px;
+}
+
+.tile {
+    flex: 0 0 auto;
+    width: 150px;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 14px;
+    background: none;
+    border: none;
+    color: var(--text-primary);
+    cursor: pointer;
+}
+
+.tile-art {
+    position: relative;
+    width: 150px;
+    height: 150px;
+    border-radius: 18px;
+    background: var(--tile-bg);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    font-size: 3.2rem;
+    color: rgba(255, 255, 255, 0.92);
+    box-shadow: 0 10px 26px rgba(0, 0, 0, 0.35);
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
+}
+
+.tile-art::before {
+    content: "";
+    position: absolute;
+    left: 14px;
+    right: 14px;
+    top: -8px;
+    height: 12px;
+    border-radius: 10px 10px 0 0;
+    background: var(--tile-bg);
+    opacity: 0.5;
+    z-index: -1;
+}
+
+.tile:hover .tile-art,
+.tile.open .tile-art {
+    transform: translateY(-4px);
+    box-shadow: 0 16px 34px rgba(0, 0, 0, 0.5);
+}
+
+.tile.open .tile-art { outline: 2px solid var(--accent); outline-offset: 3px; }
+.tile-name { font-size: 1.1rem; font-weight: 700; }
+
+.chip-panel {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 10px;
+    margin-top: 6px;
+}
+
+.chip-panel:empty { display: none; }
 
 .search-chip {
-    padding: 6px 16px;
+    padding: 8px 18px;
     border-radius: 500px;
     background: var(--bg-surface);
     border: 1px solid var(--border-color);
-    color: var(--text-muted);
-    font-size: 0.85rem;
+    color: var(--text-primary);
+    font-size: 0.9rem;
+    font-weight: 500;
     cursor: pointer;
     transition: all 0.2s ease;
 }
 
 .search-chip:hover {
-    color: var(--text-primary);
-    border-color: rgba(255, 255, 255, 0.25);
+    border-color: var(--accent);
+    background: var(--bg-surface-hover);
 }
 
-.shelves-container {
-    display: flex;
-    flex-direction: column;
-    gap: 36px;
-}
-
-.shelf-title {
-    font-size: 1.25rem;
-    font-weight: 700;
-    margin-bottom: 16px;
-    color: var(--text-primary);
-}
-
-.shelf-grid {
+/* Компактные карточки «из вашей коллекции» */
+.pick-grid {
     display: grid;
-    grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
-    gap: 18px;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 14px;
 }
 
-.shelf-card {
+.pick-card {
+    display: flex;
+    align-items: center;
+    gap: 14px;
+    padding: 10px 14px 10px 10px;
+    border-radius: 14px;
+    background: var(--bg-surface);
+    border: 1px solid var(--border-color);
+    cursor: pointer;
+    transition: background-color 0.15s ease, border-color 0.15s ease;
+    min-width: 0;
+}
+
+.pick-card:hover { background: var(--bg-surface-hover); border-color: rgba(255, 204, 0, 0.35); }
+.pick-card img { width: 56px; height: 56px; border-radius: 8px; object-fit: cover; background: #1e222d; flex: 0 0 auto; }
+.pick-card-titles { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+
+.pick-card-title,
+.pick-card-artist {
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.pick-card-title { font-weight: 600; }
+.pick-card-artist { font-size: 0.85rem; color: var(--text-muted); }
+
+.pick-card-play {
+    flex: 0 0 auto;
+    width: 38px;
+    height: 38px;
+    border-radius: 50%;
+    border: none;
+    background: var(--accent);
+    color: #000;
+    cursor: pointer;
+    font-size: 0.85rem;
+}
+
+/* Ряд «Вы могли пропустить» */
+.mix-row {
+    display: flex;
+    gap: 18px;
+    overflow-x: auto;
+    padding: 4px 4px 10px;
+}
+
+.mix-card {
+    flex: 0 0 auto;
+    width: 190px;
     aspect-ratio: 1 / 1;
     border-radius: 14px;
     padding: 18px;
     display: flex;
     flex-direction: column;
     justify-content: space-between;
-    cursor: pointer;
-    position: relative;
-    overflow: hidden;
-    transition: transform 0.25s ease, box-shadow 0.25s ease;
+    text-align: left;
+    color: #fff;
     border: 1px solid rgba(255, 255, 255, 0.06);
+    cursor: pointer;
+    transition: transform 0.25s ease, box-shadow 0.25s ease;
 }
 
-.shelf-card:hover {
-    transform: translateY(-4px);
-    box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4);
+.mix-card:hover { transform: translateY(-4px); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.4); }
+.mix-card-title { font-size: 1.15rem; font-weight: 700; }
+.mix-card-icon { align-self: flex-end; font-size: 2.2rem; color: rgba(255, 255, 255, 0.85); }
+
+/* История запросов */
+.history-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 8px;
 }
 
-.shelf-card-title {
-    font-size: 1.15rem;
-    font-weight: 700;
-    color: #ffffff;
-    z-index: 2;
+.history-clear {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    font-size: 0.9rem;
+    cursor: pointer;
 }
 
-.shelf-card-icon {
-    align-self: flex-end;
-    font-size: 2.2rem;
-    color: rgba(255, 255, 255, 0.85);
-    z-index: 2;
+.history-clear:hover { color: var(--text-primary); }
+
+.history-item {
+    display: flex;
+    align-items: center;
+    gap: 16px;
+    padding: 12px 16px;
+    border-radius: 10px;
+    cursor: pointer;
+    color: var(--text-primary);
 }
+
+.history-item:hover { background: var(--bg-surface-hover); }
+.history-item > i { color: var(--text-muted); width: 18px; text-align: center; }
+.history-item-text { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+.history-item-remove {
+    background: none;
+    border: none;
+    color: var(--text-muted);
+    cursor: pointer;
+    width: 28px;
+    height: 28px;
+    border-radius: 50%;
+}
+
+.history-item-remove:hover { color: var(--text-primary); background: var(--glass-bg); }
+
+.empty-note { padding: 24px 4px; color: var(--text-muted); }
+.error-note { padding: 24px 4px; color: #ef4444; }
+
+.search-results .track-list-wrapper { padding: 0; }
 
 /* ==========================================================================
    Списки треков
@@ -426,23 +782,23 @@ body.view-wave .main-content {
 
 .track-row {
     display: grid;
-    grid-template-columns: 36px 48px 1fr 140px 70px 40px;
+    grid-template-columns: 36px 48px minmax(0, 1fr) minmax(0, 160px) 70px 40px;
     align-items: center;
     gap: 16px;
     padding: 8px 16px;
     border-radius: 8px;
+    border-left: 3px solid transparent;
     cursor: pointer;
     transition: background-color 0.15s ease;
     user-select: none;
 }
 
-.track-row:hover {
-    background-color: var(--bg-surface-hover);
-}
+.track-row--compact { grid-template-columns: 48px minmax(0, 1fr) 70px 40px; }
+.track-row:hover { background-color: var(--bg-surface-hover); }
 
 .track-row.active {
     background-color: rgba(255, 204, 0, 0.08);
-    border-left: 3px solid var(--accent);
+    border-left-color: var(--accent);
 }
 
 .track-row-index {
@@ -451,12 +807,58 @@ body.view-wave .main-content {
     text-align: center;
 }
 
-.track-row-cover {
+.track-row-cover-wrap {
+    position: relative;
     width: 44px;
     height: 44px;
     border-radius: 6px;
-    object-fit: cover;
+    overflow: hidden;
     background: #1e222d;
+}
+
+.track-row-cover {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    display: block;
+}
+
+.track-row-overlay {
+    position: absolute;
+    inset: 0;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    background: rgba(0, 0, 0, 0.55);
+    color: #fff;
+    font-size: 0.9rem;
+    opacity: 0;
+    transition: opacity 0.15s ease;
+}
+
+.track-row:hover .track-row-overlay,
+.track-row.active .track-row-overlay { opacity: 1; }
+
+.track-row.playing .track-row-overlay i { display: none; }
+.track-row:not(.playing) .eq { display: none; }
+
+.eq { display: flex; align-items: flex-end; gap: 2px; height: 14px; }
+
+.eq span {
+    width: 3px;
+    height: 100%;
+    background: var(--accent);
+    border-radius: 1px;
+    transform-origin: bottom;
+    animation: eqBar 0.9s ease-in-out infinite;
+}
+
+.eq span:nth-child(2) { animation-delay: 0.2s; }
+.eq span:nth-child(3) { animation-delay: 0.4s; }
+
+@keyframes eqBar {
+    0%, 100% { transform: scaleY(0.25); }
+    50% { transform: scaleY(1); }
 }
 
 .track-row-titles {
@@ -474,14 +876,9 @@ body.view-wave .main-content {
     text-overflow: ellipsis;
 }
 
-.track-row-artist {
-    font-size: 0.85rem;
-    color: var(--text-muted);
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
-}
+.track-row.active .track-row-title { color: var(--accent); }
 
+.track-row-artist,
 .track-row-album {
     font-size: 0.85rem;
     color: var(--text-muted);
@@ -512,14 +909,8 @@ body.view-wave .main-content {
     transition: transform 0.15s ease, color 0.15s ease;
 }
 
-.track-like-btn:hover {
-    color: var(--text-primary);
-    transform: scale(1.15);
-}
-
-.track-like-btn.liked {
-    color: var(--accent-secondary);
-}
+.track-like-btn:hover { color: var(--text-primary); transform: scale(1.15); }
+.track-like-btn.liked { color: var(--accent-secondary); }
 
 /* ==========================================================================
    Нижний плеер (Dock) и логика его скрытия
@@ -537,14 +928,17 @@ body.view-wave .main-content {
     align-items: center;
     padding: 0 28px;
     z-index: 100;
-    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease;
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease, visibility 0s;
 }
 
-/* Полное сокрытие нижнего плеера в режиме «Моя волна» */
+/* В режиме «Моя волна» трек уже на сцене — нижний плеер полностью убираем
+   (visibility, чтобы до него нельзя было дотянуться и клавишей Tab) */
 body.view-wave .player-dock {
     transform: translateY(100%);
     opacity: 0;
     pointer-events: none;
+    visibility: hidden;
+    transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease, visibility 0s 0.35s;
 }
 
 .player-dock-left {
@@ -560,6 +954,7 @@ body.view-wave .player-dock {
     border-radius: 6px;
     object-fit: cover;
     background: #1e222d;
+    flex: 0 0 auto;
 }
 
 .player-dock-titles {
@@ -606,19 +1001,9 @@ body.view-wave .player-dock {
     transition: all 0.15s ease;
 }
 
-.control-btn:hover {
-    color: var(--text-primary);
-}
-
-.control-btn-play {
-    font-size: 2rem;
-    color: var(--text-primary);
-}
-
-.control-btn-play:hover {
-    color: var(--accent);
-    transform: scale(1.06);
-}
+.control-btn:hover { color: var(--text-primary); }
+.control-btn-play { font-size: 2rem; color: var(--text-primary); }
+.control-btn-play:hover { color: var(--accent); transform: scale(1.06); }
 
 .player-progress-container {
     width: 100%;
@@ -641,14 +1026,41 @@ body.view-wave .player-dock {
     border-radius: 2px;
     cursor: pointer;
     position: relative;
+    touch-action: none;
+}
+
+/* Невидимая «зона захвата» вокруг тонкой полоски — за 4px попасть мышью тяжело */
+.progress-track::before {
+    content: "";
+    position: absolute;
+    left: 0;
+    right: 0;
+    top: -9px;
+    bottom: -9px;
 }
 
 .progress-fill {
+    position: relative;
     height: 100%;
     background-color: var(--accent);
     border-radius: 2px;
     width: 0%;
 }
+
+.progress-fill::after {
+    content: "";
+    position: absolute;
+    right: -6px;
+    top: 50%;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #fff;
+    transform: translateY(-50%) scale(0);
+    transition: transform 0.15s ease;
+}
+
+.progress-track:hover .progress-fill::after { transform: translateY(-50%) scale(1); }
 
 .player-dock-right {
     display: flex;
@@ -661,4 +1073,17 @@ body.view-wave .player-dock {
     width: 90px;
     accent-color: var(--accent);
     cursor: pointer;
+}
+
+@media (max-width: 900px) {
+    .track-row { grid-template-columns: 36px 48px minmax(0, 1fr) 70px 40px; }
+    .track-row-album { display: none; }
+    .search-view { padding: 20px 18px 40px; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+    .wave-glow::before,
+    .wave-glow::after,
+    .eq span,
+    .wave-stage.swap { animation: none; }
 }
