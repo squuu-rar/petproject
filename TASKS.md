@@ -38,7 +38,7 @@
 - [x] wave: integrate Last.fm collaborative filtering into recommendation candidates
 - [x] search: SoundCloud search and audio stream extraction via yt-dlp
 - [x] frontend: "Моя Волна" single-track hero view with infinite stream prefetching
-- [ ] wave: candidate filter excluding track_ids played within the last N days OR skipped 2+ times, applied before scoring
+- [x] wave: candidate filter excluding track_ids played within the last N days OR skipped 2+ times, applied before scoring
 - [ ] wave: hybrid scorer mixing 60% remote radio candidates / 40% locally-liked library tracks into one ranked batch, mix ratio as a named constant
 - [ ] wave: skip-streak adaptation — track consecutive skips in session state; on the 2nd consecutive skip, drop the current genre cluster from the candidate pool and inject one known-liked local track as a "safe" pick
 - [ ] wave: mood presets (energy/focus/calm) as tempo + acoustic-feature filters on top of the ranked batch (needs a track_features table — add that migration first if it's missing)

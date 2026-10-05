@@ -131,18 +131,19 @@ def get_playback_history(limit: int = 50) -> List[Dict[str, Any]]:
         conn.close()
 
 def get_wave_exclusions(days: int = 3, skip_threshold: int = 2) -> set:
+    """Returns external_ids of tracks played recently or skipped too many times."""
     since = time.time() - days * 86400
     conn = get_db()
     try:
+        # Группируем по external_id, чтобы исключать контент, а не конкретные записи в БД
         rows = conn.execute("""
-            SELECT t.external_id AS external_id,
-                   SUM(CASE WHEN h.event IN ('play', 'finish') AND h.timestamp >= ? THEN 1 ELSE 0 END) AS recent_plays,
-                   SUM(CASE WHEN h.event = 'skip' THEN 1 ELSE 0 END) AS skips
+            SELECT t.external_id
             FROM history h
-            JOIN tracks t ON t.id = h.track_id
+            JOIN tracks t ON h.track_id = t.id
             WHERE t.external_id IS NOT NULL
-            GROUP BY t.id
-            HAVING recent_plays > 0 OR skips >= ?
+            GROUP BY t.external_id
+            HAVING SUM(CASE WHEN h.event IN ('play', 'finish') AND h.timestamp >= ? THEN 1 ELSE 0 END) > 0
+               OR SUM(CASE WHEN h.event = 'skip' THEN 1 ELSE 0 END) >= ?
         """, (since, skip_threshold)).fetchall()
         return {r["external_id"] for r in rows}
     finally:
