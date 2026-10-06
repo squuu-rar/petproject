@@ -1,7 +1,9 @@
 # Очередь задач
 
 Каждая строка — одна задача на один день/коммит.
-Формат: "- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
+Формат: "- [ ] api: GET /artists/{name} returning artist info (avatar from lastfm/ytmusic or local cover art, track count) and top tracks sorted by play count / popularity
+- [ ] frontend: artist profile view inspired by Yandex Music with large circular avatar, "Слушать" hero button, and popular tracks list; clicking artist name anywhere opens this view with back navigation
+- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
 
 - [x] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
 - [x] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
@@ -79,4 +81,3 @@
 - [ ] frontend: fix track-item layout grid and spacing between duration and like button
 - [ ] backend: save remote track duration on search and registration so it shows immediately
 - [ ] backend: stream and cache remote audio files locally to disk for instant replay
-- [ ] frontend: clickable artist name in track items and player dock filtering tracklist to that artist (with e.stopPropagation to prevent track playback trigger)
