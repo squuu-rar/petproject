@@ -46,6 +46,9 @@
 - [ ] wave: mood presets (energy/focus/calm) as tempo + acoustic-feature filters on top of the ranked batch (needs a track_features table — add that migration first if it's missing)
 - [ ] api: GET /wave/next?mood=&limit=5 returning a personalized batch from WaveEngine, session-scoped so repeated calls don't repeat already-served candidates
 
+- [ ] lyrics: LRCLIB API integration in lyrics.py to fetch synchronized LRC lyrics (syncedLyrics) by artist, title and duration with fallback to plain lyrics
+- [ ] frontend: synced karaoke lyrics overlay with live active-line tracking via audio.timeupdate, smooth center-scroll, line-click seek, and a lyrics button in player dock and wave hero
+
 - [ ] db: playlists(id, name, created_at) and playlist_tracks(playlist_id, track_id, position) tables, position as an integer index, unique(playlist_id, track_id)
 - [ ] playlists: POST /playlists {name} and GET /playlists listing the user's playlists with track_count; tracks may be local or remote (track_id is source-agnostic)
 - [ ] playlists: POST /playlists/{id}/tracks {track_id} appends at the end (position = max+1); DELETE /playlists/{id}/tracks/{track_id} removes the entry and re-indexes remaining positions
