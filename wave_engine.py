@@ -1,4 +1,5 @@
 import asyncio
+import random
 from typing import List, Dict, Any, Optional
 from ytmusicapi import YTMusic
 from db import get_db, get_wave_exclusions
@@ -6,6 +7,7 @@ from lastfm_service import LastFMService
 
 class WaveEngine:
     MAX_PARALLEL_SEARCHES = 4
+    REMOTE_RATIO: float = 0.6  # 60% remote candidates / 40% local liked
 
     def __init__(self):
         self.ytmusic = YTMusic()
@@ -36,12 +38,10 @@ class WaveEngine:
 
     def _search_youtube_stream(self, target_artist: str, target_title: str) -> Optional[Dict[str, Any]]:
         """Ищет трек строго по связке артист + песня с обязательной валидацией исполнителя."""
-        # Кавычки для артиста гарантируют, что YouTube не проигнорирует имя группы
         query = f'"{target_artist}" {target_title}'
         try:
             res = self.ytmusic.search(query=query, filter="songs", limit=3)
             if not res:
-                # Мягкий поиск без кавычек
                 res = self.ytmusic.search(query=f"{target_artist} {target_title}", filter="songs", limit=3)
             if not res:
                 return None
@@ -57,13 +57,11 @@ class WaveEngine:
                 artists = item.get("artists", [])
                 item_artist = (artists[0].get("name") if artists else "").lower().strip()
 
-                # Проверяем, что в выдаче действительно нужный исполнитель
                 if target_artist_lower in item_artist or item_artist in target_artist_lower:
                     best_match = item
                     break
 
             if not best_match:
-                # Если ни один из 3 результатов не соответствует исполнителю — отбрасываем
                 return None
 
             v_id = best_match.get("videoId")
@@ -99,12 +97,10 @@ class WaveEngine:
             return None
 
     async def _get_similar_by_artist(self, artist: str, forbidden_titles: set) -> List[Dict[str, str]]:
-        """Находит похожих артистов в Last.fm и берёт их лучшие треки."""
         if not artist or not self.lastfm.api_key:
             return []
 
         def _fetch():
-            # 1. Запрашиваем 5 похожих групп
             data = self.lastfm._sync_request({
                 "method": "artist.getsimilar",
                 "artist": artist,
@@ -121,7 +117,6 @@ class WaveEngine:
                 if not sim_name or sim_name.lower() == artist.lower():
                     continue
 
-                # 2. Забираем топ-2 главных трека этой похожей группы
                 top_data = self.lastfm._sync_request({
                     "method": "artist.gettoptracks",
                     "artist": sim_name,
@@ -134,10 +129,8 @@ class WaveEngine:
 
                 for t in tracks:
                     t_title = t.get("name")
-                    # Защита от дублей названий: не берем треки с совпадающим с сидом названием
                     if t_title and t_title.lower() not in forbidden_titles:
                         recommendations.append({"artist": sim_name, "title": t_title})
-
             return recommendations
 
         return await asyncio.to_thread(_fetch)
@@ -160,7 +153,6 @@ class WaveEngine:
             async with sem:
                 return await asyncio.to_thread(self._search_youtube_stream, item["artist"], item["title"])
 
-        # 1. Рекомендации по графу похожих исполнителей Last.fm
         candidate_tasks = []
         for s in seeds[:3]:
             if s.get("artist"):
@@ -169,11 +161,9 @@ class WaveEngine:
         gathered_groups = await asyncio.gather(*candidate_tasks, return_exceptions=True)
         raw_candidates = [t for group in gathered_groups if isinstance(group, list) for t in group]
 
-        # 2. Параллельный поиск аудиопотоков для найденных треков
         resolved = await asyncio.gather(*(resolve(c) for c in raw_candidates), return_exceptions=True)
         lastfm_tracks = [r for r in resolved if isinstance(r, dict)]
 
-        # 3. Дополнительный фоллбэк: YouTube Music Radio
         def get_yt_radio() -> List[Dict[str, Any]]:
             found: List[Dict[str, Any]] = []
             for s in seeds[:2]:
@@ -190,7 +180,6 @@ class WaveEngine:
                     title = item.get("title")
                     if not v_id or not title:
                         continue
-                    # Отсекаем треки с тем же самым названием
                     if title.lower().strip() in seed_titles:
                         continue
                     artists = item.get("artists", [])
@@ -220,7 +209,6 @@ class WaveEngine:
         except Exception:
             radio_tracks = []
 
-        # Чередуем похожие группы Last.fm и радио YouTube
         merged: List[Dict[str, Any]] = []
         for i in range(max(len(lastfm_tracks), len(radio_tracks))):
             if i < len(lastfm_tracks):
@@ -249,7 +237,7 @@ class WaveEngine:
                 ORDER BY h.timestamp DESC LIMIT 2
             """).fetchall()
 
-            liked = conn.execute("""
+            liked_seeds = conn.execute("""
                 SELECT id as track_id FROM tracks 
                 WHERE liked = 1 
                   AND artist IS NOT NULL 
@@ -257,7 +245,7 @@ class WaveEngine:
                 ORDER BY RANDOM() LIMIT 2
             """).fetchall()
 
-            raw_seeds = [r["track_id"] for r in (list(recent) + list(liked))]
+            raw_seeds = [r["track_id"] for r in (list(recent) + list(liked_seeds))]
             if not raw_seeds:
                 fallback = conn.execute("""
                     SELECT id as track_id FROM tracks 
@@ -269,5 +257,30 @@ class WaveEngine:
             conn.close()
 
         seeds = list(dict.fromkeys(raw_seeds))[:3]
-        candidates = await self.generate_candidates(seeds)
-        return candidates[:limit]
+        
+        # 1. Get remote candidates pool
+        remote_pool = await self.generate_candidates(seeds)
+
+        # 2. Calculate mix counts based on REMOTE_RATIO
+        num_remote = max(1, round(limit * self.REMOTE_RATIO))
+        num_local = max(1, limit - num_remote)
+
+        # 3. Get local liked tracks pool
+        conn = get_db()
+        try:
+            cur = conn.execute("""
+                SELECT * FROM tracks 
+                WHERE liked = 1 
+                  AND artist IS NOT NULL 
+                  AND LENGTH(title) > 2 
+                ORDER BY RANDOM() LIMIT ?
+            """, (num_local,))
+            local_pool = [dict(row) for row in cur.fetchall()]
+        finally:
+            conn.close()
+
+        # 4. Create hybrid batch and shuffle
+        mixed_batch = remote_pool[:num_remote] + local_pool[:num_local]
+        random.shuffle(mixed_batch)
+
+        return mixed_batch
