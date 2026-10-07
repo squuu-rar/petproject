@@ -1,3 +1,5 @@
+@charset "UTF-8";
+
 :root {
     --bg-primary: #0a0b0e;
     --bg-surface: #12141a;
@@ -38,7 +40,9 @@ body {
     flex-direction: column;
     gap: 24px;
     flex-shrink: 0;
-    z-index: 20;
+    position: relative;
+    z-index: 50;
+    pointer-events: auto;
 }
 
 .sidebar-logo {
@@ -72,6 +76,11 @@ body {
     font-size: 0.95rem;
     font-weight: 500;
     transition: all 0.2s ease;
+    cursor: pointer;
+    user-select: none;
+}
+.nav-item * {
+    pointer-events: none;
 }
 
 .nav-item:hover {
@@ -109,11 +118,6 @@ body {
     font-weight: 700;
 }
 
-
-
-/* ==========================================================================
-   Общие мелочи
-   ========================================================================== */
 [hidden] { display: none !important; }
 
 button { font-family: inherit; }
@@ -140,7 +144,6 @@ input:focus-visible {
     min-height: 0;
 }
 
-/* В «Волне» и «Поиске» свой заголовок не нужен: у экрана своя композиция */
 body.view-wave .content-header,
 body.view-search .content-header { display: none; }
 
@@ -149,9 +152,7 @@ body.view-wave .main-content {
     background: #07080b;
 }
 
-/* ==========================================================================
-   Toast
-   ========================================================================== */
+/* Toast */
 .toast {
     position: fixed;
     bottom: 104px;
@@ -176,10 +177,7 @@ body.view-wave .main-content {
 .toast.visible { opacity: 1; }
 body.view-wave .toast { bottom: 32px; }
 
-/* ==========================================================================
-   Сцена «Моя волна» — по мотивам Яндекс Музыки: крупный исполнитель,
-   превью обложки, капсула с названием, и никакого дубля плеера снизу.
-   ========================================================================== */
+/* «Моя волна» */
 .wave-screen {
     position: relative;
     flex: 1;
@@ -194,7 +192,6 @@ body.view-wave .toast { bottom: 32px; }
     text-align: center;
 }
 
-/* Размытая обложка текущего трека как фон */
 .wave-backdrop {
     position: absolute;
     inset: -80px;
@@ -204,9 +201,9 @@ body.view-wave .toast { bottom: 32px; }
     filter: blur(64px) saturate(1.6) brightness(0.75);
     opacity: 0.7;
     transform: scale(1.15);
+    pointer-events: none;
 }
 
-/* Два мягких светящихся пятна палитры приложения */
 .wave-glow {
     position: absolute;
     inset: 0;
@@ -323,12 +320,30 @@ body.view-wave .toast { bottom: 32px; }
     object-fit: cover;
 }
 
+/* Строка действий волны: симметричные боковые блоки и центрированная капсула */
 .wave-actions {
     display: flex;
     align-items: center;
-    gap: 10px;
+    justify-content: center;
     width: 100%;
+    max-width: 680px;
     margin-top: 6px;
+    gap: 12px;
+}
+
+.wave-actions-side {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    flex: 1 1 0%;
+}
+
+.wave-actions-left {
+    justify-content: flex-end;
+}
+
+.wave-actions-right {
+    justify-content: flex-start;
 }
 
 .wave-round {
@@ -343,19 +358,23 @@ body.view-wave .toast { bottom: 32px; }
     font-size: 1.05rem;
     cursor: pointer;
     transition: transform 0.15s ease, color 0.15s ease, background-color 0.15s ease;
+    display: flex;
+    align-items: center;
+    justify-content: center;
 }
 
 .wave-round:hover { transform: scale(1.08); background: rgba(255, 255, 255, 0.14); }
 .wave-round.liked { color: var(--accent-secondary); }
 
 .wave-capsule {
-    flex: 1;
-    min-width: 0;
+    flex: 0 0 auto;
+    min-width: 220px;
+    max-width: 420px;
     height: 48px;
     display: flex;
     align-items: center;
     justify-content: center;
-    padding: 0 22px;
+    padding: 0 24px;
     border-radius: 500px;
     background: var(--glass-bg);
     border: 1px solid var(--glass-border);
@@ -368,6 +387,69 @@ body.view-wave .toast { bottom: 32px; }
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
+}
+
+/* Поповер громкости над кнопкой звука в волне */
+.wave-volume-wrap {
+    position: relative;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+}
+
+.wave-volume-popover {
+    position: absolute;
+    bottom: calc(100% + 12px);
+    left: 50%;
+    transform: translateX(-50%) translateY(6px);
+    background: rgba(18, 20, 26, 0.96);
+    border: 1px solid var(--glass-border);
+    backdrop-filter: blur(20px);
+    border-radius: 14px;
+    padding: 8px 14px;
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    box-shadow: 0 12px 36px rgba(0, 0, 0, 0.7);
+    opacity: 0;
+    pointer-events: none;
+    transition: opacity 0.2s ease, transform 0.2s ease;
+    z-index: 50;
+    white-space: nowrap;
+}
+
+.wave-volume-popover::after {
+    content: "";
+    position: absolute;
+    top: 100%;
+    left: 50%;
+    transform: translateX(-50%);
+    border-width: 6px 6px 0 6px;
+    border-style: solid;
+    border-color: rgba(18, 20, 26, 0.96) transparent transparent transparent;
+}
+
+.wave-volume-wrap:hover .wave-volume-popover,
+.wave-volume-wrap:focus-within .wave-volume-popover {
+    opacity: 1;
+    pointer-events: auto;
+    transform: translateX(-50%) translateY(0);
+}
+
+.wave-volume-slider {
+    width: 100px;
+    accent-color: var(--accent);
+    cursor: pointer;
+    height: 4px;
+}
+
+.wave-volume-val {
+    font-size: 0.8rem;
+    font-weight: 700;
+    color: var(--accent);
+    min-width: 34px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
 }
 
 .wave-progress {
@@ -442,7 +524,6 @@ body.view-wave .toast { bottom: 32px; }
 
 .wave-shake:hover { background: var(--glass-bg); border-color: rgba(255, 255, 255, 0.3); }
 
-/* Экран до запуска волны */
 .wave-idle-title {
     font-size: clamp(2.4rem, 7vw, 4.6rem);
     font-weight: 900;
@@ -454,10 +535,7 @@ body.view-wave .toast { bottom: 32px; }
     font-size: 0.95rem;
 }
 
-/* ==========================================================================
-   Поиск — по мотивам Яндекс Музыки: вытянутая строка, вкладки-таблетки,
-   плитки-папки, компактные карточки и ряд подборок.
-   ========================================================================== */
+/* Экран поиска */
 .search-view {
     padding: 28px 36px 48px;
     display: flex;
@@ -554,7 +632,6 @@ body.view-wave .toast { bottom: 32px; }
     margin-bottom: 16px;
 }
 
-/* Плитки-«папки» с вкладкой сверху */
 .tile-row {
     display: flex;
     gap: 28px;
@@ -638,7 +715,6 @@ body.view-wave .toast { bottom: 32px; }
     background: var(--bg-surface-hover);
 }
 
-/* Компактные карточки «из вашей коллекции» */
 .pick-grid {
     display: grid;
     grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
@@ -684,7 +760,6 @@ body.view-wave .toast { bottom: 32px; }
     font-size: 0.85rem;
 }
 
-/* Ряд «Вы могли пропустить» */
 .mix-row {
     display: flex;
     gap: 18px;
@@ -712,7 +787,6 @@ body.view-wave .toast { bottom: 32px; }
 .mix-card-title { font-size: 1.15rem; font-weight: 700; }
 .mix-card-icon { align-self: flex-end; font-size: 2.2rem; color: rgba(255, 255, 255, 0.85); }
 
-/* История запросов */
 .history-head {
     display: flex;
     align-items: center;
@@ -761,9 +835,7 @@ body.view-wave .toast { bottom: 32px; }
 
 .search-results .track-list-wrapper { padding: 0; }
 
-/* ==========================================================================
-   Списки треков
-   ========================================================================== */
+/* Списки треков */
 .track-list-wrapper {
     padding: 0 36px;
     display: flex;
@@ -912,9 +984,7 @@ body.view-wave .toast { bottom: 32px; }
 .track-like-btn:hover { color: var(--text-primary); transform: scale(1.15); }
 .track-like-btn.liked { color: var(--accent-secondary); }
 
-/* ==========================================================================
-   Нижний плеер (Dock) и логика его скрытия
-   ========================================================================== */
+/* Нижний плеер (Dock) */
 .player-dock {
     position: fixed;
     bottom: 0;
@@ -931,8 +1001,6 @@ body.view-wave .toast { bottom: 32px; }
     transition: transform 0.35s cubic-bezier(0.16, 1, 0.3, 1), opacity 0.25s ease, visibility 0s;
 }
 
-/* В режиме «Моя волна» трек уже на сцене — нижний плеер полностью убираем
-   (visibility, чтобы до него нельзя было дотянуться и клавишей Tab) */
 body.view-wave .player-dock {
     transform: translateY(100%);
     opacity: 0;
@@ -1029,7 +1097,6 @@ body.view-wave .player-dock {
     touch-action: none;
 }
 
-/* Невидимая «зона захвата» вокруг тонкой полоски — за 4px попасть мышью тяжело */
 .progress-track::before {
     content: "";
     position: absolute;
