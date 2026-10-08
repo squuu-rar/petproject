@@ -32,8 +32,29 @@ class CacheManager:
                 self._update_access_time(track_id)
                 return cached_file
 
+        source = track.get("source")
         ext_id = track.get("external_id")
-        target_url = f"https://www.youtube.com/watch?v={ext_id}" if ext_id else stream_url
+        path_val = track.get("path")
+
+        # Приоритетный выбор рабочего URL для скачивания
+        if source == "soundcloud":
+            if stream_url and str(stream_url).startswith(("http://", "https://")):
+                target_url = str(stream_url)
+            elif path_val and str(path_val).startswith(("http://", "https://")):
+                target_url = str(path_val)
+            elif ext_id and str(ext_id).startswith(("http://", "https://")):
+                target_url = str(ext_id)
+            else:
+                target_url = str(ext_id or path_val or "")
+        else:
+            # Для YouTube
+            if str(ext_id).startswith(("http://", "https://")):
+                target_url = str(ext_id)
+            elif stream_url and "youtube.com" in str(stream_url):
+                target_url = str(stream_url)
+            else:
+                target_url = f"https://www.youtube.com/watch?v={ext_id}"
+
         return await self._download_track(track_id, target_url)
 
     def _update_access_time(self, track_id: int):

@@ -4,33 +4,37 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#0a0b0e">
-    <title>Music Player</title>
+    <meta name="theme-color" content="#0e0d0c">
+    <title>MusicStream</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Onest:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap&subset=cyrillic">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
 </head>
 <body class="view-library">
-    <aside class="sidebar">
-        <div class="sidebar-logo">
-            <i class="fas fa-compact-disc fa-spin-pulse"></i>
+    <header class="topbar">
+        <div class="topbar-logo">
+            <span class="logo-mark" aria-hidden="true"></span>
             <span>MusicStream</span>
         </div>
-        <nav class="sidebar-nav" aria-label="Разделы">
-            <a href="#" class="nav-item active" data-view="library"><i class="fas fa-home"></i> Библиотека</a>
-            <a href="#" class="nav-item" data-view="wave"><i class="fas fa-water"></i> Моя Волна</a>
-            <a href="#" class="nav-item" data-view="search"><i class="fas fa-search"></i> Поиск</a>
-            <a href="#" class="nav-item" data-view="favorites"><i class="fas fa-heart"></i> Любимые треки</a>
+        <nav class="topnav" aria-label="Разделы">
+            <a href="#" class="nav-item active" data-view="library"><span class="nav-num">01</span>Библиотека</a>
+            <a href="#" class="nav-item" data-view="wave"><span class="nav-num">02</span>Моя волна</a>
+            <a href="#" class="nav-item" data-view="search"><span class="nav-num">03</span>Поиск</a>
+            <a href="#" class="nav-item" data-view="favorites"><span class="nav-num">04</span>Любимое</a>
         </nav>
-    </aside>
+    </header>
 
     <main class="main-content" id="main-content">
         <header class="content-header">
             <h1 class="view-title" id="view-title">Библиотека</h1>
+            <p class="view-meta" id="view-meta"></p>
         </header>
         <section id="tracklist" aria-live="polite"></section>
     </main>
 
-    <!-- Нижний плеер (скрывается в режиме волны) -->
+    <!-- Плеер: в режиме «Моя волна» уходит со сцены, трек уже показан на деке -->
     <footer class="player-dock" id="player-dock" aria-label="Плеер">
         <div class="player-dock-left player-info">
             <img src="/static/img/default-cover.svg" alt="" class="player-dock-cover" id="player-cover">
@@ -46,7 +50,7 @@
         <div class="player-dock-center">
             <div class="player-controls-row">
                 <button class="control-btn" id="btn-prev" aria-label="Предыдущий трек"><i class="fas fa-backward-step"></i></button>
-                <button class="control-btn control-btn-play" id="btn-play" aria-label="Воспроизведение / пауза"><i class="fas fa-play-circle"></i></button>
+                <button class="control-btn control-btn-play" id="btn-play" aria-label="Воспроизведение / пауза"><i class="fas fa-play"></i></button>
                 <button class="control-btn" id="btn-next" aria-label="Следующий трек"><i class="fas fa-forward-step"></i></button>
             </div>
             <div class="player-progress-container">
