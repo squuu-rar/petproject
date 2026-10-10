@@ -1,5 +1,5 @@
 from pydantic import BaseModel
-from typing import Optional, Literal
+from typing import Optional, Literal, List
 
 class TrackRead(BaseModel):
     id: int
@@ -17,6 +17,12 @@ class TrackRead(BaseModel):
     cache_path: Optional[str] = None
     liked: Optional[bool] = False
     last_accessed: Optional[float] = None
+
+class ArtistRead(BaseModel):
+    name: str
+    avatar: Optional[str]
+    track_count: int
+    tracks: List[TrackRead]
 
 class HistoryCreate(BaseModel):
     track_id: int
@@ -38,8 +44,8 @@ class HistoryItemRead(BaseModel):
     track_number: Optional[int] = None
     duration: Optional[float] = None
     cover_path: Optional[str] = None
-    source: str = "local"
+    source: Optional[str] = None
     external_id: Optional[str] = None
     cache_path: Optional[str] = None
-    liked: Optional[bool] = False
+    liked: Optional[bool] = None
     last_accessed: Optional[float] = None

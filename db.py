@@ -131,11 +131,9 @@ def get_playback_history(limit: int = 50) -> List[Dict[str, Any]]:
         conn.close()
 
 def get_wave_exclusions(days: int = 3, skip_threshold: int = 2) -> set:
-    """Returns external_ids of tracks played recently or skipped too many times."""
     since = time.time() - days * 86400
     conn = get_db()
     try:
-        # Группируем по external_id, чтобы исключать контент, а не конкретные записи в БД
         rows = conn.execute("""
             SELECT t.external_id
             FROM history h
@@ -185,6 +183,21 @@ def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
         res = dict(cur.fetchone())
         res["liked"] = bool(res.get("liked", 0))
         return res
+    finally:
+        conn.close()
+
+def get_all_tracks_with_play_counts() -> List[Dict[str, Any]]:
+    """Returns all tracks with their play count from history."""
+    conn = get_db()
+    try:
+        query = """
+            SELECT t.*, COUNT(h.id) as play_count
+            FROM tracks t
+            LEFT JOIN history h ON t.id = h.track_id AND h.event IN ('play', 'finish')
+            GROUP BY t.id
+        """
+        cur = conn.execute(query)
+        return [dict(row) for row in cur.fetchall()]
     finally:
         conn.close()
 

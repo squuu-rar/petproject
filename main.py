@@ -8,8 +8,11 @@ from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import init_db, get_track_by_id, get_tracks_paginated, get_playback_history, get_db, save_remote_track
-from schemas import TrackRead, HistoryCreate, HistoryItemRead
+from db import (
+    init_db, get_track_by_id, get_tracks_paginated, get_playback_history, 
+    get_db, save_remote_track, get_all_tracks_with_play_counts
+)
+from schemas import TrackRead, ArtistRead, HistoryCreate, HistoryItemRead
 from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
 from soundcloud_service import SoundCloudSearchService
 from providers import YoutubeStreamProvider
@@ -53,6 +56,66 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/health")
 def health():
     return {"status": "ok"}
+
+@app.get("/artists/{name}", response_model=ArtistRead)
+def get_artist(name: str):
+    # 1. Fetch all tracks with play counts
+    all_tracks = get_all_tracks_with_play_counts()
+    
+    # 2. Filter in Python to handle Cyrillic case-insensitivity
+    target_artist_lower = name.strip().lower()
+    artist_tracks = [
+        t for t in all_tracks 
+        if t["artist"] and t["artist"].strip().lower() == target_artist_lower
+    ]
+    
+    if not artist_tracks:
+        raise HTTPException(status_code=404, detail="Artist not found or has no tracks")
+
+    # 3. Sort tracks: play_count DESC, liked DESC, id ASC
+    # We create a list of track dicts for the response, ensuring we don't return the internal 'play_count'
+    # unless TrackRead expects it (it doesn't)
+    
+    # Sort actual track list
+    artist_tracks.sort(key=lambda x: (-x["play_count"], -x["liked"], x["id"]))
+
+    # 4. Determine avatar
+    # avatar = cover_path of the most played track, else the first track with a cover
+    avatar = artist_tracks[0]["cover_path"]
+    if not avatar:
+        for t in artist_tracks:
+            if t["cover_path"]:
+                avatar = t["cover_path"]
+                break
+
+    # 5. Prepare response tracks (must be TrackRead shape)
+    response_tracks = []
+    for t in artist_tracks:
+        resp_track = {
+            "id": t["id"],
+            "path": t["path"],
+            "title": t["title"],
+            "artist": t["artist"],
+            "album": t["album"],
+            "genre": t["genre"],
+            "year": t["year"],
+            "track_number": t["track_number"],
+            "duration": t["duration"],
+            "cover_path": t["cover_path"],
+            "source": t["source"],
+            "external_id": t["external_id"],
+            "cache_path": t["cache_path"],
+            "liked": bool(t["liked"]),
+            "last_accessed": t["last_accessed"],
+        }
+        response_tracks.append(resp_track)
+
+    return {
+        "name": name,
+        "avatar": avatar,
+        "track_count": len(artist_tracks),
+        "tracks": response_tracks
+    }
 
 @app.get("/tracks", response_model=list[TrackRead])
 def list_tracks(
