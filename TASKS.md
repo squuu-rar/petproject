@@ -1,9 +1,7 @@
 # Очередь задач
 
 Каждая строка — одна задача на один день/коммит.
-Формат: "- [ ] api: GET /artists/{name} returning artist info (avatar from lastfm/ytmusic or local cover art, track count) and top tracks sorted by play count / popularity
-- [ ] frontend: artist profile view inspired by Yandex Music with large circular avatar, "Слушать" hero button, and popular tracks list; clicking artist name anywhere opens this view with back navigation
-- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
+Формат: "- [ ] область: что сделать" (после выполнения daily_dev.py сам меняет на "[x]").
 
 - [x] scanner: parse ID3/FLAC tags with mutagen, write to tracks table (SQLite)
 - [x] scanner: handle edge cases (missing tags fallback to filename, OGG/Opus/M4A support)
@@ -42,24 +40,35 @@
 - [x] frontend: "Моя Волна" single-track hero view with infinite stream prefetching
 - [x] wave: candidate filter excluding track_ids played within the last N days OR skipped 2+ times, applied before scoring
 - [x] wave: hybrid scorer mixing 60% remote radio candidates / 40% locally-liked library tracks into one ranked batch, mix ratio as a named constant
+- [ ] api: GET /artists/{name} — local data only: {name, avatar, track_count, tracks[]}; match the artist case-insensitively in Python (SQLite LOWER() breaks on Cyrillic), tracks sorted by play count from the history table (events play/finish), then liked, then id, same shape as GET /tracks; avatar = cover_path of the most played track, else the first track with a cover; 404 when the artist has no tracks
+- [ ] api: enrich GET /artists/{name} with a remote avatar — Last.fm artist.getInfo image if the Last.fm integration is configured, else the first ytmusic search(filter='artists') thumbnail, else the local cover; 4s timeout per lookup, in-memory cache of the result, any failure falls back to the local avatar without raising
+- [ ] frontend: artist profile view in the app's own hi-fi style (do NOT copy Yandex Music): large round avatar, artist name in the display font (Unbounded), mono caption "N ТРЕКОВ", a vermilion «Слушать» key that plays the artist's tracks as a queue via playFromList, and the popular tracks as the standard track table (createTrackRow); no new nav item — the view opens on top of the current section
+- [ ] frontend: make the artist name clickable everywhere (track rows, search results, player dock, wave deck) and open the artist view; call e.stopPropagation() in track rows so the click does not start playback; keep keyboard access (the name is a button or link with focus-visible)
+- [ ] frontend: back navigation for the artist view — hash route #/artist/<name>, a «← Назад» ghost button, browser back/forward support, and restoring the previous section (library, favorites or search query) when returning
+
+- [ ] frontend: loading state for slow first plays — spinner on the play keys (dock and wave deck) while audio fires waiting/loadstart, removed on playing/canplay; on an audio error retry the same track once after 3 seconds before auto-skipping, so a track that is still being cached is not skipped
+- [ ] cache: prefetch the next 2 tracks of the queue in the background — POST /cache/prefetch {track_ids} calls CacheManager.get_or_download without waiting, the frontend sends it when a track starts playing; skip local tracks and tracks that are already cached
+- [ ] tests: SearchOrchestrator deduplication — a SoundCloud track already saved in the DB (also with source='remote'), repeated URLs and re-uploads inside the SoundCloud results all collapse into one row; the same song in different sources stays as separate rows
+- [ ] tests: CacheManager — concurrent get_or_download calls for one track start a single download, a failed download leaves no files and can be retried, eviction removes SoundCloud tracks too and keeps liked and local ones
+
 - [ ] wave: skip-streak adaptation — track consecutive skips in session state; on the 2nd consecutive skip, drop the current genre cluster from the candidate pool and inject one known-liked local track as a "safe" pick
 - [ ] wave: mood presets (energy/focus/calm) as tempo + acoustic-feature filters on top of the ranked batch (needs a track_features table — add that migration first if it's missing)
 - [ ] api: GET /wave/next?mood=&limit=5 returning a personalized batch from WaveEngine, session-scoped so repeated calls don't repeat already-served candidates
 
-- [ ] lyrics: LRCLIB API integration in lyrics.py to fetch synchronized LRC lyrics (syncedLyrics) by artist, title and duration with fallback to plain lyrics
-- [ ] frontend: synced karaoke lyrics overlay with live active-line tracking via audio.timeupdate, smooth center-scroll, line-click seek, and a lyrics button in player dock and wave hero
+- [x] lyrics: LRCLIB API integration in lyrics.py to fetch synchronized LRC lyrics (syncedLyrics) by artist, title and duration with fallback to plain lyrics
+- [ ] frontend: synced karaoke lyrics overlay (data from GET /tracks/{id}/lyrics) with live active-line tracking via audio.timeupdate, smooth center-scroll and line-click seek; open it from a lyrics key in the player dock and from the secondary key row of the wave deck (next to the copy key); style it in the app's own hi-fi look: bone text on graphite, the active line in the vermilion accent, mono timestamps
 
 - [ ] db: playlists(id, name, created_at) and playlist_tracks(playlist_id, track_id, position) tables, position as an integer index, unique(playlist_id, track_id)
 - [ ] playlists: POST /playlists {name} and GET /playlists listing the user's playlists with track_count; tracks may be local or remote (track_id is source-agnostic)
 - [ ] playlists: POST /playlists/{id}/tracks {track_id} appends at the end (position = max+1); DELETE /playlists/{id}/tracks/{track_id} removes the entry and re-indexes remaining positions
 - [ ] api: GET /tracks/{id}/download streaming the file with a Content-Disposition: attachment header (local tracks only; remote, not-yet-cached tracks return 404 with a clear message)
-- [ ] frontend: playlist drawer in the sidebar listing playlists, "+ Новый плейлист" opens a modal (name input, create button, calls POST /playlists)
+- [ ] frontend: playlists view — the app now has a top navigation bar instead of a sidebar, so add nav item 05 «Плейлисты» listing the playlists as an index list (number, name, track count); "+ Новый плейлист" opens a modal (name input, create button, calls POST /playlists)
 - [ ] frontend: context menu on track cards with "Добавить в плейлист" (submenu of existing playlists) and "Скачать на диск" (calls the download endpoint above)
 
 - [ ] frontend: MediaSession API — set metadata (title/artist/artwork) and action handlers (play/pause/previoustrack/nexttrack) so OS lock-screen/media-key controls work and playback continues with the screen locked
 - [ ] frontend: global keyboard shortcuts — Space (play/pause, ignored while focus is in an input), ArrowLeft/ArrowRight (seek ±5s), L (like current track), N (next track)
-- [ ] frontend: mobile layout — player dock becomes a swipeable bottom sheet (collapsed mini-bar by default, swipe up for full view), sidebar becomes a slide-over drawer below 768px
-- [ ] frontend: toast notification component for API errors (failed search, failed like, network error) — non-blocking, auto-dismisses after ~4s
+- [ ] frontend: mobile layout on top of the existing media queries (topbar nav scrolls horizontally, nav numbers hidden below 600px) — the floating player dock becomes a swipeable bottom sheet (collapsed mini-bar by default, swipe up for the full view with the waveform scrubber); no sidebar drawer is needed anymore
+- [x] frontend: toast notification component for API errors (failed search, failed like, network error) — non-blocking, auto-dismisses after ~4s
 - [ ] frontend: infinite scroll / "load more" pagination on the main tracklist instead of loading everything at once
 - [ ] frontend: PWA manifest.json (name, icons, theme_color) + a minimal service worker caching the app shell, so the player is installable on a mobile home screen
 
@@ -81,6 +90,6 @@
 - [ ] docker: Dockerfile (python:3.12-slim base, ffmpeg via apt, copies the app, runs uvicorn) with tracks.db and the cache dir declared as VOLUMEs
 - [ ] docker: docker-compose.yml wiring the app service, persistent volumes for tracks.db and cache/, and env vars for the library path
 - [ ] docs: README.md with an architecture diagram (providers/cache/wave/api/frontend overview), setup/quickstart instructions and 2-3 screenshots
-- [ ] frontend: fix track-item layout grid and spacing between duration and like button
-- [ ] backend: save remote track duration on search and registration so it shows immediately
-- [ ] backend: stream and cache remote audio files locally to disk for instant replay
+- [x] frontend: fix track-item layout grid and spacing between duration and like button
+- [x] backend: save remote track duration on search and registration so it shows immediately
+- [x] backend: stream and cache remote audio files locally to disk for instant replay
