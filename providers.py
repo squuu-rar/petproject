@@ -1,9 +1,16 @@
 import abc
+import os
 import pathlib
 from typing import Any
 import mutagen
 import yt_dlp
 from ytmusicapi import YTMusic
+
+from ytdlp_opts import stream_opts
+
+# Сколько треков запрашиваем у YouTube Music. Каждые ~20 результатов — отдельный сетевой запрос,
+# поэтому 60 заметно замедляет поиск. Значение прежнее, но теперь настраивается.
+YTM_SEARCH_LIMIT = int(os.environ.get("YTM_SEARCH_LIMIT", "60"))
 
 class StreamSource(abc.ABC):
     """Abstract base class for stream sources.
@@ -115,7 +122,7 @@ class RemoteDiscoveryProvider(StreamSource):
     def search(self, query: str) -> list[dict[str, Any]]:
         """Search for songs on YouTube Music."""
         try:
-            results = self.ytmusic.search(query, filter="songs", limit=60)
+            results = self.ytmusic.search(query, filter="songs", limit=YTM_SEARCH_LIMIT)
             search_results = []
             for r in results:
                 if r.get("resultType") == "song":
@@ -162,11 +169,23 @@ class RemoteDiscoveryProvider(StreamSource):
 
         try:
             song = self.ytmusic.get_song(self.video_id)
+            # ytmusicapi.get_song возвращает ответ плеера: название, автор и длительность лежат
+            # в videoDetails. Прежний код читал верхний уровень и почти всегда получал None.
+            # Запасной вариант с верхним уровнем оставлен для обратной совместимости.
+            details = song.get("videoDetails") or song
+            artist = details.get("author")
+            if not artist and song.get("artists"):
+                artist = song["artists"][0].get("name")
+            duration = details.get("lengthSeconds") or details.get("duration")
+            try:
+                duration = float(duration) if duration is not None else None
+            except (TypeError, ValueError):
+                pass
             return {
-                "title": song.get("title"),
-                "artist": song.get("artists", [{}])[0].get("name") if song.get("artists") else None,
+                "title": details.get("title"),
+                "artist": artist,
                 "album": song.get("album", {}).get("name") if song.get("album") else None,
-                "duration": song.get("duration"),
+                "duration": duration,
                 "source": "remote",
                 "external_id": self.video_id,
             }
@@ -184,13 +203,9 @@ class YoutubeStreamProvider(StreamSource):
 
     def _get_ydl_info(self) -> dict[str, Any]:
         """Internal method to extract info using yt-dlp."""
-        ydl_opts = {
-            'format': 'bestaudio/best',
-            'quiet': True,
-            'noplaylist': True,
-            'no_warnings': True,
-        }
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
+        # Раньше здесь были настройки по умолчанию, а кэш качал с другими (клиенты android/web,
+        # повторы): ссылка определялась хуже, чем файл скачивался. Теперь настройки общие.
+        with yt_dlp.YoutubeDL(stream_opts()) as ydl:
             return ydl.extract_info(self.url, download=False)
 
     def get_stream_url(self) -> str:

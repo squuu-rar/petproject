@@ -1,21 +1,17 @@
 import time
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from fastapi import FastAPI, Query, Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Query, Depends, HTTPException
 from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
+from fastapi.responses import FileResponse
 from pathlib import Path
 from typing import Optional
 from ytmusicapi import YTMusic
 
-from db import (
-    init_db, get_track_by_id, get_tracks_paginated, get_playback_history, 
-    get_db, save_remote_track, get_all_tracks_with_play_counts
-)
-from schemas import TrackRead, ArtistRead, HistoryCreate, HistoryItemRead
+from db import init_db, get_track_by_id, get_tracks_paginated, get_playback_history, get_db, save_remote_track
+from schemas import TrackRead, HistoryCreate, HistoryItemRead
 from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
-from soundcloud_service import SoundCloudSearchService
-from providers import YoutubeStreamProvider
+from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
 from cache_manager import CacheManager
 from lyrics import fetch_lyrics
 from wave_engine import WaveEngine
@@ -25,6 +21,9 @@ STATIC_DIR = BASE_DIR / "static"
 CACHE_DIR = STATIC_DIR / "cache"
 STATIC_DIR.mkdir(parents=True, exist_ok=True)
 CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Сколько запрос /stream ждёт, пока трек докачается в кэш (первый запуск нового трека)
+STREAM_WAIT_S = 75
 
 cache_manager: Optional[CacheManager] = None
 wave_engine: Optional[WaveEngine] = None
@@ -56,66 +55,6 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 @app.get("/health")
 def health():
     return {"status": "ok"}
-
-@app.get("/artists/{name}", response_model=ArtistRead)
-def get_artist(name: str):
-    # 1. Fetch all tracks with play counts
-    all_tracks = get_all_tracks_with_play_counts()
-    
-    # 2. Filter in Python to handle Cyrillic case-insensitivity
-    target_artist_lower = name.strip().lower()
-    artist_tracks = [
-        t for t in all_tracks 
-        if t["artist"] and t["artist"].strip().lower() == target_artist_lower
-    ]
-    
-    if not artist_tracks:
-        raise HTTPException(status_code=404, detail="Artist not found or has no tracks")
-
-    # 3. Sort tracks: play_count DESC, liked DESC, id ASC
-    # We create a list of track dicts for the response, ensuring we don't return the internal 'play_count'
-    # unless TrackRead expects it (it doesn't)
-    
-    # Sort actual track list
-    artist_tracks.sort(key=lambda x: (-x["play_count"], -x["liked"], x["id"]))
-
-    # 4. Determine avatar
-    # avatar = cover_path of the most played track, else the first track with a cover
-    avatar = artist_tracks[0]["cover_path"]
-    if not avatar:
-        for t in artist_tracks:
-            if t["cover_path"]:
-                avatar = t["cover_path"]
-                break
-
-    # 5. Prepare response tracks (must be TrackRead shape)
-    response_tracks = []
-    for t in artist_tracks:
-        resp_track = {
-            "id": t["id"],
-            "path": t["path"],
-            "title": t["title"],
-            "artist": t["artist"],
-            "album": t["album"],
-            "genre": t["genre"],
-            "year": t["year"],
-            "track_number": t["track_number"],
-            "duration": t["duration"],
-            "cover_path": t["cover_path"],
-            "source": t["source"],
-            "external_id": t["external_id"],
-            "cache_path": t["cache_path"],
-            "liked": bool(t["liked"]),
-            "last_accessed": t["last_accessed"],
-        }
-        response_tracks.append(resp_track)
-
-    return {
-        "name": name,
-        "avatar": avatar,
-        "track_count": len(artist_tracks),
-        "tracks": response_tracks
-    }
 
 @app.get("/tracks", response_model=list[TrackRead])
 def list_tracks(
@@ -152,10 +91,30 @@ async def get_wave_recommendations(limit: int = Query(20, ge=1, le=50)):
 
 @app.post("/tracks/remote", response_model=TrackRead)
 def register_remote_track(track: TrackRead):
-    return save_remote_track(track.model_dump())
+    data = track.model_dump()
+    saved = save_remote_track(data)
+    # save_remote_track может записать любой внешний трек как 'remote'. Для SoundCloud это ломало
+    # выбор источника: трек считался YouTube-видео, а в поиске попадал не в ту группу.
+    wanted = "soundcloud" if (data.get("source") == "soundcloud" or is_soundcloud_url(data.get("external_id"))) else None
+    if wanted and saved.get("source") != wanted:
+        conn = get_db()
+        try:
+            conn.execute("UPDATE tracks SET source = ? WHERE id = ?", (wanted, saved["id"]))
+            conn.commit()
+        finally:
+            conn.close()
+        saved["source"] = wanted
+    return saved
 
 @app.get("/stream/{track_id}")
-def stream_track(track_id: int, background_tasks: BackgroundTasks):
+async def stream_track(track_id: int):
+    """Отдаёт аудио файлом. Для YouTube и SoundCloud трек, которого нет в кэше, сначала докачивается.
+
+    Раньше тут был редирект 307 на прямую ссылку, а кэш качал файл в фоне. Прямая ссылка нередко
+    не проигрывается в <audio> (HLS у SoundCloud, 403 у googlevideo, протухание), плеер получал
+    ошибку и пропускал трек. К возвращению к треку фоновая загрузка уже заканчивалась, и он играл
+    из кэша. Теперь первый запуск нового трека занимает несколько секунд, но не падает, а все
+    параллельные запросы браузера (Range и повторные) делят одну загрузку."""
     track = get_track_by_id(track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -167,51 +126,19 @@ def stream_track(track_id: int, background_tasks: BackgroundTasks):
             raise HTTPException(status_code=404, detail="Audio file not found on disk")
         return FileResponse(file_path)
 
-    if source == "soundcloud":
-        sc_url = track.get("path") or track.get("external_id")
-        if not sc_url:
-            raise HTTPException(status_code=500, detail="SoundCloud track missing URL")
-
-        if track.get("cache_path"):
-            cached_path = Path(track["cache_path"])
-            if cached_path.exists():
-                if cache_manager:
-                    cache_manager._update_access_time(track_id)
-                return FileResponse(cached_path)
-
-        stream_url = SoundCloudSearchService.get_stream_url(sc_url)
-        if not stream_url:
-            raise HTTPException(status_code=500, detail="Failed to resolve SoundCloud stream")
-
-        if cache_manager:
-            background_tasks.add_task(cache_manager.get_or_download, track_id, sc_url)
-        return RedirectResponse(url=stream_url, status_code=307)
-
-    if source == "remote":
-        external_id = track.get("external_id")
-        if not external_id:
+    # source='remote' бывает и у SoundCloud-треков, сохранённых до исправления регистрации
+    if source in ("remote", "soundcloud"):
+        if not (track.get("external_id") or track.get("path")):
             raise HTTPException(status_code=500, detail="Remote track missing external_id")
+        if cache_manager is None:
+            raise HTTPException(status_code=503, detail="Кэш ещё не инициализирован")
 
-        if track.get("cache_path"):
-            cached_path = Path(track["cache_path"])
-            if cached_path.exists():
-                if cache_manager:
-                    cache_manager._update_access_time(track_id)
-                return FileResponse(cached_path)
-
-        try:
-            provider = YoutubeStreamProvider(external_id)
-            stream_url = provider.get_stream_url()
-            if not stream_url:
-                raise HTTPException(status_code=500, detail="Failed to extract YouTube stream URL")
-            if cache_manager:
-                yt_watch_url = f"https://www.youtube.com/watch?v={external_id}"
-                background_tasks.add_task(cache_manager.get_or_download, track_id, yt_watch_url)
-            return RedirectResponse(url=stream_url, status_code=307)
-        except HTTPException:
-            raise
-        except Exception as e:
-            raise HTTPException(status_code=500, detail=f"Failed to resolve remote stream: {str(e)}")
+        cached = cache_manager.get_cached_path(track_id)
+        if cached is None:
+            cached = await cache_manager.ensure_cached(track_id, timeout=STREAM_WAIT_S)
+        if cached is None:
+            raise HTTPException(status_code=502, detail="Не удалось получить аудио: источник недоступен")
+        return FileResponse(cached, media_type=CacheManager.media_type(cached))
 
     raise HTTPException(status_code=400, detail="Unsupported source")
 
@@ -259,5 +186,5 @@ def get_track_lyrics_by_id(track_id: int):
     return fetch_lyrics(track.get("artist"), track.get("title"), track.get("duration"))
 
 @app.get("/lyrics")
-def get_track_lyrics(artist: str, title: str, duration: float = None):
+def get_track_lyrics(artist: str, title: str, duration: Optional[float] = None):
     return fetch_lyrics(artist, title, duration)
