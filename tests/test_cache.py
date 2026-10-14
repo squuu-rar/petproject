@@ -2,7 +2,7 @@ import asyncio
 import shutil
 import time
 from pathlib import Path
-from unittest.mock import MagicMock, patch
+from unittest.mock import patch
 
 import pytest
 
@@ -27,12 +27,10 @@ def temp_db(tmp_path, monkeypatch):
 
 
 def test_cache_manager_download_and_evict(temp_cache_dir, temp_db):
-    # Setup: 1MB limit
     manager = CacheManager(temp_cache_dir, 1024 * 1024)
 
     conn = db.get_db()
     cur = conn.cursor()
-    # Create two remote tracks
     cur.execute(
         "INSERT INTO tracks (path, title, source, external_id, liked, last_accessed) VALUES (?, ?, ?, ?, ?, ?)",
         ("p1", "T1", "remote", "vid1", 0, 100.0),
@@ -44,54 +42,47 @@ def test_cache_manager_download_and_evict(temp_cache_dir, temp_db):
     conn.commit()
     conn.close()
 
-    # Mock yt-dlp to return a "file"
     with patch("cache_manager.yt_dlp.YoutubeDL") as mock_ydl_cls:
-
         def fake_ydl(ydl_opts):
             class DummyYDL:
-
                 def __enter__(self):
                     return self
 
                 def __exit__(self, *args):
                     pass
 
+                def _write_dummy(self):
+                    raw_tmpl = str(ydl_opts["outtmpl"])
+                    real_path = Path(raw_tmpl.replace("%(ext)s", "mp3"))
+                    real_path.parent.mkdir(parents=True, exist_ok=True)
+                    real_path.write_bytes(b"0" * (600 * 1024))
+                    return real_path
+
                 def download(self, urls):
-                    out_path = Path(ydl_opts["outtmpl"])
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_bytes(b"0" * (600 * 1024))  # 600KB
+                    self._write_dummy()
 
                 def extract_info(self, url, download=True):
-                    out_path = Path(ydl_opts["outtmpl"])
-                    out_path.parent.mkdir(parents=True, exist_ok=True)
-                    out_path.write_bytes(b"0" * (600 * 1024))  # 600KB
-                    return {"id": "vid1", "ext": "mp3"}
-
-                def prepare_filename(self, info):
-                    return ydl_opts["outtmpl"]
+                    p = self._write_dummy()
+                    return {
+                        "id": "vid1",
+                        "ext": "mp3",
+                        "requested_downloads": [{"filepath": str(p)}],
+                    }
 
             return DummyYDL()
 
         mock_ydl_cls.side_effect = fake_ydl
 
-        # Download first track (600KB)
         path1 = asyncio.run(manager.get_or_download(1, "url1"))
-        assert path1.exists()
+        assert path1 is not None and path1.exists()
         time.sleep(0.02)
 
-        # Download second track (600KB) -> Total 1.2MB > 1MB limit
-        # Should trigger eviction of track 1 (oldest unliked)
         path2 = asyncio.run(manager.get_or_download(2, "url2"))
-        assert path2.exists()
+        assert path2 is not None and path2.exists()
 
-        # Check eviction
         conn = db.get_db()
-        row1 = conn.execute(
-            "SELECT cache_path FROM tracks WHERE id = 1"
-        ).fetchone()
-        row2 = conn.execute(
-            "SELECT cache_path FROM tracks WHERE id = 2"
-        ).fetchone()
+        row1 = conn.execute("SELECT cache_path FROM tracks WHERE id = 1").fetchone()
+        row2 = conn.execute("SELECT cache_path FROM tracks WHERE id = 2").fetchone()
         conn.close()
 
         assert row1["cache_path"] is None

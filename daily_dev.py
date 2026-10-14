@@ -3,8 +3,10 @@
 Идеальный агент автономной разработки (daily_dev.py) для локальной Gemma через Ollama.
 
 Ключевые гарантии безопасности:
-1. Защита ручной работы: перед запуском проверяет git status. Если есть незакоммиченные
-   файлы пользователя — скрипт немедленно останавливается и не трогает рабочее дерево.
+1. Автосохранение ручной работы: ваши незакоммиченные правки коммитятся отдельным коммитом
+   «autosave» и пушатся ПЕРЕД работой модели, поэтому останавливаться и просить закоммитить
+   вручную больше не нужно. Секреты (.env, ключи API), базы, логи, музыка, кэш и слишком
+   большие файлы не коммитятся никогда; всё прочее остаётся на диске нетронутым.
 2. Изолированный откат (Safe Rollback): команды `git reset --hard` и `git clean -fd`
    полностью удалены. При ошибках модели скрипт точечно возвращает в исходное состояние
    только те файлы, которые модель изменила в текущей попытке. Созданные моделью
@@ -12,13 +14,18 @@
 3. Автоопределение модели и проверка Ollama: перед обращением к API опрашивает /api/tags.
    Если указанная модель отсутствует, ищет доступные варианты Gemma и переключается
    на них, исключая падения с кодом 404.
-4. Валидация перед записью на диск: синтаксис проверяется через AST Python, Node.js (для JS)
+4. Автопуш: после каждого коммита выполняется git push с повторами; при расхождении с
+   удалённой веткой делается pull --rebase. Непушнутые коммиты (например, при отсутствии
+   сети) уходят при следующем запуске. Коммитятся только файлы, записанные моделью.
+5. Валидация перед записью на диск: синтаксис проверяется через AST Python, Node.js (для JS)
    и JSON parser. Код с плейсхолдерами ('// rest of code') отклоняется на лету.
 """
 
 from __future__ import annotations
 
 import ast
+import fcntl
+import hashlib
 import json
 import os
 import re
@@ -59,8 +66,8 @@ else:
     CPTR_MODEL = _env_model
 
 # Настройки генерации для моделей Gemma
-TEMPERATURE = float(os.environ.get("CPTR_TEMPERATURE", "1.0"))
-MAX_PREDICT = int(os.environ.get("CPTR_MAX_PREDICT", "49152"))
+TEMPERATURE = float(os.environ.get("CPTR_TEMPERATURE", "0.2"))
+MAX_PREDICT = int(os.environ.get("CPTR_MAX_PREDICT", "65536"))
 THINK = os.environ.get("CPTR_THINK", "false").strip().lower() in ("true", "1", "yes")
 
 # Ограничения и таймауты
@@ -70,8 +77,8 @@ ATTEMPT_HARD_TIMEOUT_S = 1500
 REASONING_LOOP_ABORT_CHARS = 35000
 
 # Бюджет контекста файлов
-MAX_FILE_CONTEXT_CHARS = 22000
-MAX_TOTAL_CONTEXT_CHARS = 95000
+MAX_FILE_CONTEXT_CHARS = 65000
+MAX_TOTAL_CONTEXT_CHARS = 110000
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
 
 # Файлы и папки, которые агент никогда не читает в контекст и не модифицирует
@@ -84,6 +91,7 @@ IGNORED_DIRS = {"__pycache__", ".pytest_cache", ".git", "venv", ".venv", "cache"
 # Защита от ленивого вывода модели
 LAZY_PATTERNS = [
     "... (обрезано",
+    "... (файл обрезан",
     "// rest of code",
     "/* rest of code",
     "# rest of code",
@@ -97,8 +105,54 @@ LAZY_PATTERNS = [
     "# previous code",
 ]
 
-SHRINK_GUARD_RATIO = 0.55
+SHRINK_GUARD_RATIO = 0.80
 MIN_OLD_LEN_FOR_SHRINK_CHECK = 300
+
+# Git-автоматика
+def _flag(name: str, default: bool) -> bool:
+    raw = os.environ.get(name)
+    return default if raw is None else raw.strip().lower() in ("1", "true", "yes", "on")
+
+AUTO_PUSH = _flag("AUTO_PUSH", True)                          # пушить после каждого коммита
+AUTOSAVE_USER_CHANGES = _flag("AUTOSAVE_USER_CHANGES", True)  # коммитить ваши ручные правки
+DEFER_STUCK_TASKS = _flag("DEFER_STUCK_TASKS", True)          # откладывать задачи, которые модель не тянет
+GIT_REMOTE = os.environ.get("GIT_REMOTE", "origin")
+AUTOSAVE_MAX_FILE_BYTES = int(os.environ.get("AUTOSAVE_MAX_FILE_BYTES", str(1024 * 1024)))
+PUSH_RETRY_DELAYS = (10, 30, 90)       # паузы между попытками пуша, секунды
+GIT_NET_TIMEOUT_S = 120                # потолок на сетевую git-команду (чтобы ssh не зависал)
+MAX_TASK_FAIL_RUNS = int(os.environ.get("MAX_TASK_FAIL_RUNS", "3"))
+
+# Что автосохранение не коммитит НИКОГДА
+NEVER_COMMIT_NAMES = {".env", "daily_dev.log", "tracks.db", "tracks.db-wal", "tracks.db-shm",
+                      "id_rsa", "id_ed25519", "id_ecdsa"}
+NEVER_COMMIT_DIRS = ("venv/", ".venv/", "node_modules/", "__pycache__/", ".pytest_cache/",
+                     "static/cache/", "static/covers/", "backups/")
+NEVER_COMMIT_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".log", ".pyc", ".pem", ".key", ".p12", ".pfx",
+                         ".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".webm", ".aac",
+                         ".zip", ".tar", ".gz", ".7z", ".part", ".tmp", ".swp"}
+# Новые (неотслеживаемые) файлы берём только такие; изменения уже отслеживаемых — любые разрешённые выше
+NEW_FILE_SUFFIXES = {".py", ".js", ".css", ".html", ".md", ".txt", ".json", ".svg", ".toml",
+                     ".yml", ".yaml", ".cfg", ".ini", ".sh", ".service", ".timer"}
+NEW_FILE_NAMES = {"Dockerfile", "docker-compose.yml", "requirements.txt", "Makefile", "LICENSE",
+                  ".gitignore", ".dockerignore", ".env.example", ".env.sample"}
+NEW_IMAGE_DIRS = ("docs/", "static/img/")
+NEW_IMAGE_SUFFIXES = {".png", ".jpg", ".jpeg", ".webp", ".gif"}
+
+SECRET_PATTERNS = [
+    (r"-----BEGIN [A-Z ]*PRIVATE KEY-----", "приватный ключ"),
+    (r"\bAIza[0-9A-Za-z_\-]{35}\b", "ключ Google API"),
+    (r"\bAQ\.[A-Za-z0-9_\-]{30,}", "ключ Google/Gemini API"),
+    (r"\bgh[pousr]_[A-Za-z0-9]{36,}\b", "токен GitHub"),
+    (r"\bgithub_pat_[A-Za-z0-9_]{40,}\b", "токен GitHub"),
+    (r"\bsk-[A-Za-z0-9_\-]{32,}\b", "ключ API (sk-)"),
+    (r"\bxox[baprs]-[A-Za-z0-9\-]{10,}", "токен Slack"),
+    (r"(?i)\b(api[_-]?key|secret|token|passwd|password)\b\s*[:=]\s*['\"][A-Za-z0-9_\-/+=.]{20,}['\"]", "ключ или пароль в коде"),
+]
+GITIGNORE_ENTRIES = [".env", ".env.*", "!.env.example", "!.env.sample", "daily_dev.log", "tracks.db", "tracks.db-wal",
+                     "tracks.db-shm", "__pycache__/", "*.pyc", ".pytest_cache/", "venv/", ".venv/", "static/cache/"]
+
+# Пути, изменённые вами и НЕ попавшие в автосохранение (секрет, размер и т.п.): модель их не трогает
+LOCKED_PATHS: set = set()
 
 # -----------------------------------------------------------------------------
 # 2. СИСТЕМНОЕ ЛОГИРОВАНИЕ И КОМАНДЫ
@@ -114,46 +168,361 @@ def log(msg: str):
     except Exception:
         pass
 
-def run_cmd(cmd: list[str], cwd: Path = REPO_DIR, check: bool = True) -> subprocess.CompletedProcess:
-    log("$ " + " ".join(cmd))
-    res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True)
+def run_cmd(cmd: list[str], cwd: Path = REPO_DIR, check: bool = True,
+            env: Optional[dict] = None, timeout: Optional[int] = None) -> subprocess.CompletedProcess:
+    shown = " ".join(cmd)
+    log("$ " + (shown if len(shown) < 300 else shown[:300] + " …"))
+    try:
+        res = subprocess.run(cmd, cwd=cwd, capture_output=True, text=True, env=env, timeout=timeout)
+    except subprocess.TimeoutExpired:
+        res = subprocess.CompletedProcess(cmd, 124, "", f"таймаут {timeout}с")
     if res.stdout and res.stdout.strip():
         log(res.stdout.strip())
     if res.stderr and res.stderr.strip():
         log(res.stderr.strip())
     if check and res.returncode != 0:
-        raise RuntimeError(f"Команда завершилась с ошибкой ({res.returncode}): {' '.join(cmd)}\n{res.stderr}")
+        raise RuntimeError(f"Команда завершилась с ошибкой ({res.returncode}): {' '.join(cmd)[:300]}\n{res.stderr}")
     return res
 
 # -----------------------------------------------------------------------------
 # 3. БЕЗОПАСНОСТЬ РЕПОЗИТОРИЯ И ИЗОЛИРОВАННЫЙ ОТКАТ
 # -----------------------------------------------------------------------------
 
-def assert_clean_working_tree():
-    """Проверяет, нет ли ручных незакоммиченных изменений перед стартом."""
-    status_out = subprocess.run(
-        ["git", "status", "--porcelain"],
-        cwd=REPO_DIR, capture_output=True, text=True
-    ).stdout.strip().splitlines()
+# --- служебные пути git ------------------------------------------------------
 
-    dirty_files = []
-    for line in status_out:
-        if len(line) < 4:
-            continue
-        rel_str = line[3:].strip().strip('"')
-        path = Path(rel_str)
-        if path.name in PROTECTED_SYSTEM_FILES or any(part in IGNORED_DIRS for part in path.parts):
-            continue
-        dirty_files.append(rel_str)
+def _git_dir() -> Path:
+    res = subprocess.run(["git", "rev-parse", "--git-dir"], cwd=REPO_DIR, capture_output=True, text=True)
+    if res.returncode != 0:
+        log(f"Критическая ошибка: {REPO_DIR} не является git-репозиторием.")
+        sys.exit(1)
+    p = Path(res.stdout.strip())
+    return p if p.is_absolute() else (REPO_DIR / p)
 
-    if dirty_files:
-        msg = (
-            "ОСТАНОВКА: Обнаружены незакоммиченные изменения пользователя в репозитории:\n"
-            + "\n".join(f"  - {f}" for f in dirty_files)
-            + "\nЗакоммитьте или спрячьте их (git stash) перед запуском авторазработки!"
-        )
-        log(msg)
+def acquire_lock():
+    """Не даёт двум запускам (таймер и ручной) работать одновременно: они дрались бы за индекс git."""
+    fh = open(_git_dir() / "daily_dev.lock", "w")
+    try:
+        fcntl.flock(fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        log("Другой запуск daily_dev.py уже работает — выхожу.")
         sys.exit(0)
+    return fh  # ссылку нужно держать до конца процесса
+
+def abort_if_git_busy():
+    gd = _git_dir()
+    busy = [n for n in ("rebase-merge", "rebase-apply", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD") if (gd / n).exists()]
+    if busy:
+        log(f"ОСТАНОВКА: в репозитории не завершено слияние/ребейз ({', '.join(busy)}). "
+            "Завершите его вручную (git status), автоматика пока ничего не трогает.")
+        sys.exit(1)
+
+# --- журнал попытки: защита от падения посреди изменения файлов -------------------
+
+def _journal_path() -> Path:
+    return _git_dir() / "daily_dev_attempt.json"
+
+def write_attempt_journal(snapshots: Dict[Path, Optional[str]]):
+    data = {str(p.relative_to(REPO_DIR)): orig for p, orig in snapshots.items()}
+    _journal_path().write_text(json.dumps(data, ensure_ascii=False), encoding="utf-8")
+
+def clear_attempt_journal():
+    try:
+        _journal_path().unlink()
+    except FileNotFoundError:
+        pass
+
+def recover_interrupted_attempt():
+    """Если прошлый запуск убили (питание, kill -9) посреди попытки, файлы модели остались бы
+    «грязными», и автосохранение закоммитило бы непроверенный код как вашу работу."""
+    jp = _journal_path()
+    if not jp.exists():
+        return
+    try:
+        data = json.loads(jp.read_text(encoding="utf-8"))
+    except Exception:
+        clear_attempt_journal()
+        return
+    log("Найден журнал прерванной попытки — возвращаю файлы к исходному состоянию.")
+    safe_rollback({REPO_DIR / rel: orig for rel, orig in data.items()})
+    clear_attempt_journal()
+
+# --- .gitignore ---------------------------------------------------------------------
+
+def ensure_gitignore():
+    """Секреты и служебные файлы должны быть в .gitignore: иначе любой ручной `git add .` их утащит."""
+    gi = REPO_DIR / ".gitignore"
+    current = gi.read_text(encoding="utf-8").splitlines() if gi.exists() else []
+    have = {line.strip() for line in current}
+    missing = [e for e in GITIGNORE_ENTRIES if e not in have]
+    if not missing:
+        return
+    addition = ["", "# служебные файлы (добавлено daily_dev.py)"] + missing
+    gi.write_text("\n".join(current + addition).lstrip("\n") + "\n", encoding="utf-8")
+    log(f"В .gitignore добавлено: {', '.join(missing)}")
+
+# --- что в рабочем дереве изменено ------------------------------------------------------
+
+def git_changes() -> List[Tuple[str, str]]:
+    """[(XY, путь)] по `git status --porcelain=v1 -z`. Нормально обрабатывает пробелы и переименования."""
+    out = subprocess.run(["git", "status", "--porcelain=v1", "-z", "--untracked-files=all"],
+                         cwd=REPO_DIR, capture_output=True).stdout
+    parts = out.split(b"\0")
+    changes: List[Tuple[str, str]] = []
+    i = 0
+    while i < len(parts):
+        entry = parts[i]
+        i += 1
+        if len(entry) < 4:
+            continue
+        xy = entry[:2].decode()
+        path = entry[3:].decode("utf-8", "surrogateescape")
+        if xy[0] in "RC" and i < len(parts):
+            old = parts[i].decode("utf-8", "surrogateescape")
+            i += 1
+            if xy[0] == "R":
+                changes.append((" D", old))  # старый путь при переименовании — это удаление
+        changes.append((xy, path))
+    return changes
+
+_SECRET_RES = [(re.compile(pattern), label) for pattern, label in SECRET_PATTERNS]
+
+def find_secret(path: Path) -> Optional[str]:
+    try:
+        text = path.read_text(encoding="utf-8", errors="ignore")
+    except OSError:
+        return None
+    for rx, label in _SECRET_RES:
+        m = rx.search(text)
+        if m:
+            return f"{label}, строка {text.count(chr(10), 0, m.start()) + 1}"
+    return None
+
+def is_never_commit_path(rel: str) -> Optional[str]:
+    p = Path(rel)
+    name, posix = p.name, p.as_posix()
+    if name in NEVER_COMMIT_NAMES or name.startswith(("id_rsa", "id_ed25519")):
+        return "секреты и служебные файлы не коммитятся"
+    if name.startswith(".env") and name not in NEW_FILE_NAMES:
+        return "файлы .env не коммитятся"
+    if any(posix.startswith(d) or f"/{d}" in f"/{posix}" for d in NEVER_COMMIT_DIRS):
+        return "служебная папка (кэш, окружение, данные)"
+    if p.suffix.lower() in NEVER_COMMIT_SUFFIXES:
+        return f"файлы {p.suffix} не коммитятся автоматически"
+    return None
+
+def blocked_reason(rel: str, xy: str) -> Optional[str]:
+    """Почему этот изменённый путь нельзя коммитить автоматически (None = можно)."""
+    reason = is_never_commit_path(rel)
+    if reason or "D" in xy:
+        return reason
+    full = REPO_DIR / rel
+    if not full.is_file():
+        return None
+    size = full.stat().st_size
+    if size > AUTOSAVE_MAX_FILE_BYTES:
+        return f"слишком большой ({size // 1024} КБ, лимит {AUTOSAVE_MAX_FILE_BYTES // 1024} КБ)"
+    p = Path(rel)
+    if xy == "??" and p.name in PROTECTED_SYSTEM_FILES and p.name != "TASKS.md":
+        # run.py, копии daily_dev_N.py и т.п.: вы намеренно держите их вне git, публиковать их без вас не будем
+        return "служебный файл вне git (добавьте вручную через git add, если он нужен в репозитории)"
+    if xy == "??":
+        in_img_dir = any(p.as_posix().startswith(d) for d in NEW_IMAGE_DIRS)
+        allowed = (p.suffix.lower() in NEW_FILE_SUFFIXES or p.name in NEW_FILE_NAMES
+                   or (in_img_dir and p.suffix.lower() in NEW_IMAGE_SUFFIXES))
+        if not allowed:
+            return "новый файл такого типа автоматически не коммитится"
+    hit = find_secret(full)
+    return f"возможный секрет ({hit})" if hit else None
+
+def commit_paths(paths: List[str], message: str, body: str = "") -> bool:
+    """Коммит РОВНО этих путей. --only игнорирует всё, что вы успели добавить в индекс сами
+    (например, случайно проиндексированный .env), поэтому оно не попадёт в коммит."""
+    paths = sorted(set(paths))
+    run_cmd(["git", "add", "-A", "--"] + paths, check=False)
+    cmd = ["git", "commit", "--only", "-m", message]
+    if body:
+        cmd += ["-m", body]
+    res = run_cmd(cmd + ["--"] + paths, check=False)
+    if res.returncode != 0:
+        log("Коммит не создан (возможно, изменений нет).")
+        return False
+    return True
+
+def autosave_user_changes() -> bool:
+    """Коммитит ваши ручные правки, чтобы не просить вас делать это самому."""
+    if not AUTOSAVE_USER_CHANGES:
+        return False
+    changes = git_changes()
+    if not changes:
+        return False
+    if any("U" in xy or xy in ("AA", "DD") for xy, _ in changes):
+        log("Автосохранение пропущено: в дереве есть неразрешённые конфликты.")
+        return False
+
+    tracked = subprocess.run(["git", "ls-files"], cwd=REPO_DIR, capture_output=True, text=True).stdout.splitlines()
+    deleted = [p for xy, p in changes if "D" in xy]
+    if len(deleted) > max(10, int(len(tracked) * 0.3)):
+        log(f"Автосохранение пропущено: удалено {len(deleted)} из {len(tracked)} файлов — похоже на сбой "
+            "(например, не примонтирован диск). Проверьте `git status`.")
+        return False
+
+    paths, skipped = [], {}
+    for xy, p in changes:
+        reason = blocked_reason(p, xy)
+        if reason:
+            skipped[p] = reason
+        else:
+            paths.append(p)
+    for p, reason in skipped.items():
+        if p not in NEVER_COMMIT_NAMES and Path(p).name != "daily_dev.log":
+            log(f"  не коммичу {p}: {reason}")
+    if not paths:
+        return False
+
+    names = [Path(p).name for p in paths]
+    title = "autosave: " + ", ".join(names[:4]) + (f" и ещё {len(names) - 4}" if len(names) > 4 else "")
+    ok = commit_paths(paths, title, "Локальные изменения, сохранённые автоматически перед запуском daily_dev.py:\n"
+                      + "\n".join(f"- {p}" for p in paths[:40]))
+    if ok:
+        log(f"✓ Ваши правки сохранены коммитом ({len(paths)} файл.).")
+    return ok
+
+def refresh_locked_paths():
+    """Изменённое вами, но не попавшее в автосохранение: модель такие файлы не трогает."""
+    LOCKED_PATHS.clear()
+    LOCKED_PATHS.update(Path(p).as_posix() for _, p in git_changes())
+
+# --- синхронизация и пуш ----------------------------------------------------------------
+
+def _git_env() -> dict:
+    """Окружение для сетевых git-команд: без интерактивных запросов, с таймаутами ssh.
+    Ваш core.sshCommand (например, порт 443) сохраняется — мы только дописываем опции."""
+    env = dict(os.environ)
+    env["GIT_TERMINAL_PROMPT"] = "0"
+    ssh = env.get("GIT_SSH_COMMAND", "").strip()
+    if not ssh:
+        cfg = subprocess.run(["git", "config", "--get", "core.sshCommand"], cwd=REPO_DIR,
+                             capture_output=True, text=True).stdout.strip()
+        ssh = cfg or "ssh"
+    if "BatchMode" not in ssh:
+        ssh += " -o BatchMode=yes -o ConnectTimeout=20 -o ServerAliveInterval=15 -o ServerAliveCountMax=3"
+    env["GIT_SSH_COMMAND"] = ssh
+    return env
+
+def git_net(args: List[str]) -> subprocess.CompletedProcess:
+    return run_cmd(["git"] + args, check=False, env=_git_env(), timeout=GIT_NET_TIMEOUT_S)
+
+def current_branch() -> Optional[str]:
+    res = subprocess.run(["git", "symbolic-ref", "--short", "-q", "HEAD"], cwd=REPO_DIR, capture_output=True, text=True)
+    return res.stdout.strip() or None
+
+def _push_enabled() -> Optional[str]:
+    """Имя ветки, если пушить можно; иначе None (с пояснением в логе)."""
+    if not AUTO_PUSH:
+        return None
+    if subprocess.run(["git", "remote", "get-url", GIT_REMOTE], cwd=REPO_DIR, capture_output=True).returncode != 0:
+        log(f"Автопуш выключен: remote '{GIT_REMOTE}' не настроен (git remote add {GIT_REMOTE} <url>).")
+        return None
+    branch = current_branch()
+    if not branch:
+        log("Автопуш выключен: HEAD не на ветке (detached HEAD).")
+    return branch
+
+def commits_ahead(branch: str) -> Optional[int]:
+    res = subprocess.run(["git", "rev-list", "--count", f"{GIT_REMOTE}/{branch}..HEAD"],
+                         cwd=REPO_DIR, capture_output=True, text=True)
+    return int(res.stdout.strip() or 0) if res.returncode == 0 else None  # None: ветки на сервере ещё нет
+
+def sync_with_remote() -> bool:
+    branch = _push_enabled()
+    if not branch:
+        return True
+    res = git_net(["pull", "--rebase", "--autostash", GIT_REMOTE, branch])
+    if res.returncode == 0:
+        return True
+    if "couldn't find remote ref" in (res.stderr or "").lower():
+        return True  # на сервере такой ветки ещё нет — подтягивать нечего
+    gd = _git_dir()
+    if (gd / "rebase-merge").exists() or (gd / "rebase-apply").exists():
+        run_cmd(["git", "rebase", "--abort"], check=False)
+    log("pull --rebase не удался (конфликт или нет сети). Локальные коммиты сохранены; "
+        "пуш повторится при следующем запуске.")
+    return False
+
+def push_pending() -> bool:
+    """Пушит всё, что ещё не на сервере. True — если пушить нечего или пуш удался."""
+    branch = _push_enabled()
+    if not branch:
+        return True
+    if commits_ahead(branch) == 0:
+        return True
+    attempts = len(PUSH_RETRY_DELAYS) + 1
+    for i in range(attempts):
+        res = git_net(["push", "-u", GIT_REMOTE, branch])
+        if res.returncode == 0:
+            log(f"✓ Запушено в {GIT_REMOTE}/{branch}.")
+            return True
+        err = ((res.stderr or "") + (res.stdout or "")).lower()
+        if "permission denied" in err or "authentication failed" in err or "publickey" in err:
+            log("Пуш отклонён: нет доступа. Проверьте ssh-ключ (`ssh -T git@github.com`) и права на репозиторий.")
+            return False
+        if any(k in err for k in ("rejected", "non-fast-forward", "fetch first")):
+            if not sync_with_remote():
+                break
+            continue
+        if i < attempts - 1:
+            log(f"Пуш не удался, повтор через {PUSH_RETRY_DELAYS[i]}с ({i + 1}/{attempts - 1}).")
+            time.sleep(PUSH_RETRY_DELAYS[i])
+    log("Не удалось запушить. Коммиты остались локально и уйдут при следующем запуске.")
+    return False
+
+# --- застрявшие задачи ------------------------------------------------------------------
+
+def _state_path() -> Path:
+    return _git_dir() / "daily_dev_state.json"
+
+def _load_state() -> dict:
+    try:
+        return json.loads(_state_path().read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+
+def note_task_result(task_idx: int, task_text: str, passed: bool):
+    """Считает подряд проваленные запуски по задаче. После MAX_TASK_FAIL_RUNS откладывает её
+    в конец очереди, чтобы каждый день не биться об одно и то же."""
+    key = hashlib.sha1(task_text.encode("utf-8")).hexdigest()[:12]
+    state = _load_state()
+    fails = state.setdefault("fails", {})
+    if passed:
+        fails.pop(key, None)
+    else:
+        fails[key] = fails.get(key, 0) + 1
+        log(f"Задача не решена: это {fails[key]}-й провальный запуск подряд (порог откладывания: {MAX_TASK_FAIL_RUNS}).")
+        if DEFER_STUCK_TASKS and fails[key] >= MAX_TASK_FAIL_RUNS and defer_task(task_idx, task_text):
+            fails.pop(key, None)
+    _state_path().write_text(json.dumps(state), encoding="utf-8")
+
+def defer_task(idx: int, text: str) -> bool:
+    lines = TASKS_FILE.read_text(encoding="utf-8").splitlines()
+    others = [i for i, l in enumerate(lines) if i != idx and re.match(r"^\s*-\s*\[\s*\]\s*", l)]
+    if not others:
+        return False  # откладывать некуда: это последняя открытая задача
+    lines.append(lines.pop(idx))
+    TASKS_FILE.write_text("\n".join(lines) + "\n", encoding="utf-8")
+    ok = commit_paths(["TASKS.md"], f"auto: отложена задача после {MAX_TASK_FAIL_RUNS} неудачных запусков: {text[:50]}")
+    log("Задача перенесена в конец очереди TASKS.md." if ok else "Не удалось закоммитить перенос задачи.")
+    return ok
+
+def scan_snapshots_for_secrets(snapshots: Dict[Path, Optional[str]]) -> Optional[str]:
+    for p in snapshots:
+        hit = find_secret(p) if p.exists() else None
+        if hit:
+            return f"{p.relative_to(REPO_DIR)}: {hit}"
+    return None
+
+def commit_model_changes(task_text: str, snapshots: Dict[Path, Optional[str]]) -> bool:
+    rels = {p.relative_to(REPO_DIR).as_posix() for p in snapshots} | {"TASKS.md"}
+    return commit_paths(sorted(rels), f"auto: {task_text[:72]}")
 
 def safe_rollback(staged_targets: Dict[Path, Optional[str]]):
     """
@@ -173,6 +542,7 @@ def safe_rollback(staged_targets: Dict[Path, Optional[str]]):
                 log(f"  - Восстановлено исходное состояние: {target_path.name}")
         except Exception as e:
             log(f"  ! Ошибка при откате {target_path.name}: {e}")
+    clear_attempt_journal()
 
 # -----------------------------------------------------------------------------
 # 4. ВАЛИДАЦИЯ И ПОДГОТОВКА МОДЕЛИ В OLLAMA
@@ -360,6 +730,13 @@ def parse_and_apply_files(response_text: str) -> Tuple[bool, Optional[str], Dict
         if target.name in PROTECTED_SYSTEM_FILES:
             return False, f"Защита системы: модификация служебного файла '{target.name}' запрещена!", {}
 
+        rel_posix = target.relative_to(REPO_DIR).as_posix()
+        if rel_posix in LOCKED_PATHS:
+            return False, f"Файл '{rel_posix}' содержит ваши локальные изменения, которые нельзя автосохранить: не трогай его.", {}
+        never = is_never_commit_path(rel_posix)
+        if never:
+            return False, f"Запись в '{rel_posix}' запрещена ({never}).", {}
+
         valid, err = validate_code_syntax(rel_path, file_code)
         if not valid:
             return False, err, {}
@@ -375,6 +752,9 @@ def parse_and_apply_files(response_text: str) -> Tuple[bool, Optional[str], Dict
             snapshots[target] = None
 
         staged_ops.append((target, rel_path, file_code))
+
+    # Журнал пишем ДО записи: если процесс убьют посреди попытки, следующий запуск вернёт файлы назад
+    write_attempt_journal(snapshots)
 
     # Запись файлов на диск
     for target, rel_path, file_code in staged_ops:
@@ -544,23 +924,44 @@ def call_gemma_agent(task_text: str, error_feedback: Optional[str] = None) -> st
 
 def main():
     REPO_DIR.mkdir(parents=True, exist_ok=True)
-    
-    # 1. Проверяем Ollama и активируем модель
+    lock = acquire_lock()  # noqa: F841  (держим ссылку до конца процесса)
+    abort_if_git_busy()
+    recover_interrupted_attempt()
+
+    # 1. Ваша ручная работа: сохраняем коммитом и пушим ПЕРЕД всем остальным.
+    #    Так вы не обязаны коммитить сами, а падение Ollama не задерживает ваши коммиты.
+    ensure_gitignore()
+    autosave_user_changes()
+    sync_with_remote()
+    pushed = push_pending()
+    refresh_locked_paths()
+
+    def finish() -> None:
+        if not pushed:
+            log("Завершено, но не все коммиты запушены (см. выше).")
+            sys.exit(2)
+
+    # 2. Проверяем Ollama и активируем модель
     active_model = ensure_ollama_model()
     log(f"Локальная среда активна. Модель: {active_model}")
-
-    # 2. Страховка: проверяем, что у пользователя нет незакоммиченной ручной работы
-    assert_clean_working_tree()
 
     # 3. Получаем очередную задачу из TASKS.md
     task_idx, task_text = get_next_task()
     if task_text is None:
         log("Все задачи в TASKS.md уже выполнены!")
+        finish()
         return
 
     log(f"Начало работы над задачей: '{task_text}'")
     last_error_feedback: Optional[str] = None
     task_passed = False
+    snapshots: Dict[Path, Optional[str]] = {}
+
+    base_ok, base_report = run_tests()
+    if not base_ok:
+        log(f"ОСТАНОВКА: Тесты в репозитории падают ещё до запуска модели!\n{base_report}")
+        finish()
+        return
 
     for attempt in range(1, MAX_ATTEMPTS + 1):
         log(f"=== Попытка {attempt} из {MAX_ATTEMPTS} ===")
@@ -577,8 +978,19 @@ def main():
             safe_rollback(snapshots)
             continue
 
-        ok, test_report = run_tests()
+        try:
+            ok, test_report = run_tests()
+        except BaseException:
+            safe_rollback(snapshots)  # Ctrl+C или сбой на тестах не должен оставить файлы модели «грязными»
+            raise
+
         if ok:
+            leaked = scan_snapshots_for_secrets(snapshots)
+            if leaked:
+                log(f"✗ В коде модели найден секрет ({leaked}) — попытка отклонена.")
+                last_error_feedback = "В коде нельзя хранить ключи и пароли: читай их из переменных окружения."
+                safe_rollback(snapshots)
+                continue
             log(f"✓ Тесты успешно пройдены на попытке {attempt}!")
             task_passed = True
             break
@@ -589,14 +1001,22 @@ def main():
 
     if not task_passed:
         log(f"Задача не решена за {MAX_ATTEMPTS} попыток. Репозиторий оставлен в чистом исходном состоянии.")
+        note_task_result(task_idx, task_text, False)
+        pushed = push_pending() and pushed  # noqa: F841
+        finish()
         return
 
-    # 4. Фиксация в Git при полном успехе
-    run_cmd(["git", "add", "-A"])
+    # 4. Фиксация при успехе: ТОЛЬКО файлы, записанные моделью, и TASKS.md (никакого `git add -A`)
     mark_task_done(task_idx)
-    run_cmd(["git", "add", "TASKS.md"])
-    run_cmd(["git", "commit", "-m", f"auto: {task_text[:72]}"])
-    log("✓ Изменения успешно проверены и зафиксированы коммитом в Git!")
+    committed = commit_model_changes(task_text, snapshots)
+    clear_attempt_journal()
+    if committed:
+        log("✓ Изменения проверены и зафиксированы коммитом в Git!")
+    else:
+        log("Коммит не создан: файлы остались в дереве, следующий запуск сохранит их автосохранением.")
+    note_task_result(task_idx, task_text, True)
+    pushed = push_pending() and pushed  # noqa: F841
+    finish()
 
 if __name__ == "__main__":
     try:
