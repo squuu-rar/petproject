@@ -74,12 +74,12 @@ THINK = os.environ.get("CPTR_THINK", "false").strip().lower() in ("true", "1", "
 MAX_ATTEMPTS = 3
 READ_TIMEOUT_S = 2400
 ATTEMPT_HARD_TIMEOUT_S = 1500
-REASONING_LOOP_ABORT_CHARS = 35000
+REASONING_LOOP_ABORT_CHARS = 75000
 
 # Бюджет контекста файлов
 MAX_FILE_CONTEXT_CHARS = 65000
 MAX_TOTAL_CONTEXT_CHARS = 115000
-CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
+CONTEXT_GLOBS = ("*.py", "*.json")
 
 # Файлы и папки, которые агент никогда не читает в контекст и не модифицирует
 PROTECTED_SYSTEM_FILES = {

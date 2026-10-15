@@ -1314,4 +1314,400 @@ document.addEventListener('DOMContentLoaded', () => {
     fetchTracks({ limit: 100 }).then(tracks => renderTracklist(tracks)).catch(() => {
         tracklist.innerHTML = '<div class="empty-note" style="padding:36px;">Ошибка загрузки медиатеки</div>';
     });
+
+    // === HI-FI ARTIST & KARAOKE EXTENSION ===
+    const mainContentEl = document.querySelector('.main-content');
+    const contentHeaderEl = document.querySelector('.content-header');
+    let artistLayerEl = null;
+    let currentArtistTracks = [];
+    let isHandlingHash = false;
+
+    // 1. Делаем имена артистов кликабельными и доступными с клавиатуры везде
+    function markClickableArtists(root = document) {
+        const selectors = '.track-row-artist, .pick-card-artist, #player-artist, #wave-artist';
+        root.querySelectorAll(selectors).forEach(el => {
+            if (!el.classList.contains('clickable-artist')) {
+                el.classList.add('clickable-artist');
+                el.setAttribute('tabindex', '0');
+                el.setAttribute('role', 'button');
+                el.setAttribute('title', 'Открыть профиль исполнителя');
+            }
+        });
+        // Кнопка текста песни на сцене «Моя волна» рядом с копированием
+        const copyBtn = document.getElementById('wave-copy-btn');
+        if (copyBtn && !document.getElementById('wave-lyrics-btn')) {
+            const lyrBtn = document.createElement('button');
+            lyrBtn.id = 'wave-lyrics-btn';
+            lyrBtn.className = 'key key--icon';
+            lyrBtn.title = 'Текст песни (караоке)';
+            lyrBtn.setAttribute('aria-label', 'Текст песни');
+            lyrBtn.innerHTML = '<i class="fas fa-microphone-lines"></i>';
+            lyrBtn.addEventListener('click', () => toggleLyricsOverlay());
+            copyBtn.parentNode.insertBefore(lyrBtn, copyBtn);
+        }
+    }
+
+    markClickableArtists();
+    const domObserver = new MutationObserver(() => markClickableArtists());
+    if (tracklist) domObserver.observe(tracklist, { childList: true, subtree: true });
+
+    function extractArtistName(el) {
+        const raw = (el.textContent || '').trim();
+        if (!raw || raw === 'Неизвестный исполнитель' || raw === '-') return null;
+        return raw;
+    }
+
+    // Перехват клика в фазе capture, чтобы клик по имени в строке трека не запускал песню
+    document.addEventListener('click', (e) => {
+        const artistEl = e.target.closest('.track-row-artist, .pick-card-artist, #player-artist, #wave-artist');
+        if (!artistEl) return;
+        const name = extractArtistName(artistEl);
+        if (!name) return;
+        e.stopPropagation();
+        e.preventDefault();
+        openArtistView(name);
+    }, true);
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        const artistEl = e.target.closest('.track-row-artist, .pick-card-artist, #player-artist, #wave-artist');
+        if (!artistEl) return;
+        const name = extractArtistName(artistEl);
+        if (!name) return;
+        e.stopPropagation();
+        e.preventDefault();
+        openArtistView(name);
+    }, true);
+
+    // 2. Экран профиля исполнителя поверх текущей секции
+    function closeArtistView({ updateHash = true } = {}) {
+        if (artistLayerEl) {
+            artistLayerEl.remove();
+            artistLayerEl = null;
+        }
+        if (tracklist) tracklist.hidden = false;
+        if (contentHeaderEl) contentHeaderEl.style.display = '';
+        if (updateHash && location.hash.startsWith('#/artist/')) {
+            history.pushState(null, '', location.pathname + location.search);
+        }
+        updateActiveTrackUI();
+    }
+
+    // При клике по верхнему меню закрываем слой артиста
+    document.querySelectorAll('.nav-item').forEach(item => {
+        item.addEventListener('click', () => closeArtistView({ updateHash: true }));
+    });
+
+    async function openArtistView(artistName, { pushHash = true } = {}) {
+        const cleanName = (artistName || '').trim();
+        if (!cleanName || !mainContentEl) return;
+
+        const targetHash = `#/artist/${encodeURIComponent(cleanName)}`;
+        if (pushHash && location.hash !== targetHash) {
+            history.pushState({ artist: cleanName }, '', targetHash);
+        }
+
+        if (!artistLayerEl) {
+            artistLayerEl = document.createElement('div');
+            artistLayerEl.className = 'artist-view-layer';
+            artistLayerEl.addEventListener('click', (e) => {
+                const likeBtn = e.target.closest('.track-like-btn');
+                if (!likeBtn) return;
+                e.stopPropagation();
+                const row = likeBtn.closest('.track-row');
+                if (row && row._track) applyLike(row._track);
+            });
+            mainContentEl.appendChild(artistLayerEl);
+        }
+
+        if (tracklist) tracklist.hidden = true;
+        if (contentHeaderEl) contentHeaderEl.style.display = 'none';
+
+        artistLayerEl.innerHTML = `
+            <div class="artist-back-row">
+                <button class="ghost-btn" id="artist-back-btn">← Назад</button>
+            </div>
+            <div class="empty-note"><i class="fas fa-spinner fa-spin"></i> Загрузка профиля «${escapeHtml(cleanName)}»…</div>
+        `;
+        artistLayerEl.querySelector('#artist-back-btn')?.addEventListener('click', () => {
+            if (location.hash.startsWith('#/artist/')) history.back();
+            else closeArtistView({ updateHash: true });
+        });
+
+        try {
+            const data = await fetchJson(`/artists/${encodeURIComponent(cleanName)}`);
+            if (!artistLayerEl) return;
+            const tracks = Array.isArray(data.tracks) ? data.tracks : [];
+            currentArtistTracks = tracks;
+            const count = data.track_count ?? tracks.length;
+            const countLabel = `${count} ${plural(count, ['ТРЕК', 'ТРЕКА', 'ТРЕКОВ'])}`;
+
+            artistLayerEl.innerHTML = `
+                <div class="artist-back-row">
+                    <button class="ghost-btn" id="artist-back-btn">← Назад</button>
+                </div>
+                <div class="artist-hero">
+                    <div class="artist-avatar-wrap">
+                        <img class="artist-avatar" id="artist-hero-avatar" src="${escapeHtml(data.avatar || DEFAULT_COVER)}" alt="">
+                    </div>
+                    <div class="artist-hero-info">
+                        <div class="artist-hero-meta">
+                            <span class="eyebrow"><span class="eyebrow-dot"></span>Исполнитель</span>
+                            <span>${escapeHtml(countLabel)}</span>
+                        </div>
+                        <h1 class="artist-hero-name">${escapeHtml(data.name || cleanName)}</h1>
+                        <div class="artist-hero-actions">
+                            <button class="key key--primary key--start" id="artist-play-all">
+                                <i class="fas fa-play"></i><span>Слушать</span>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="track-list-wrapper" id="artist-tracks-wrap">
+                    <div class="track-table-head"><span>№</span><span></span><span>Название</span><span>Альбом</span><span>Время</span><span></span></div>
+                </div>
+            `;
+
+            bindImgFallback(artistLayerEl.querySelector('#artist-hero-avatar'));
+            artistLayerEl.querySelector('#artist-back-btn')?.addEventListener('click', () => {
+                if (location.hash.startsWith('#/artist/')) history.back();
+                else closeArtistView({ updateHash: true });
+            });
+            artistLayerEl.querySelector('#artist-play-all')?.addEventListener('click', () => {
+                if (tracks.length > 0) playFromList(tracks, 0);
+            });
+
+            const wrap = artistLayerEl.querySelector('#artist-tracks-wrap');
+            tracks.forEach((t, idx) => {
+                wrap.appendChild(createTrackRow(t, tracks, idx));
+            });
+            markClickableArtists(artistLayerEl);
+        } catch (err) {
+            if (!artistLayerEl) return;
+            artistLayerEl.innerHTML = `
+                <div class="artist-back-row">
+                    <button class="ghost-btn" id="artist-back-btn">← Назад</button>
+                </div>
+                <div class="error-note">Треки исполнителя «${escapeHtml(cleanName)}» пока не сохранены в локальной базе</div>
+            `;
+            artistLayerEl.querySelector('#artist-back-btn')?.addEventListener('click', () => closeArtistView({ updateHash: true }));
+        }
+    }
+
+    function syncArtistLayerActiveRows() {
+        if (!artistLayerEl) return;
+        const playing = !audioPlayer.paused;
+        artistLayerEl.querySelectorAll('.track-row').forEach(row => {
+            const active = Boolean(currentlyPlayingTrack) && isSameTrack(row._track, currentlyPlayingTrack);
+            row.classList.toggle('active', active);
+            row.classList.toggle('playing', active && playing);
+            if (row._track) setHeartIcon(row.querySelector('.track-like-btn'), row._track.liked);
+        });
+    }
+
+    audioPlayer.addEventListener('play', syncArtistLayerActiveRows);
+    audioPlayer.addEventListener('pause', syncArtistLayerActiveRows);
+
+    window.addEventListener('popstate', () => {
+        if (isHandlingHash) return;
+        isHandlingHash = true;
+        try {
+            if (location.hash.startsWith('#/artist/')) {
+                const name = decodeURIComponent(location.hash.slice('#/artist/'.length));
+                openArtistView(name, { pushHash: false });
+            } else if (artistLayerEl) {
+                closeArtistView({ updateHash: false });
+            }
+        } finally {
+            isHandlingHash = false;
+        }
+    });
+
+    if (location.hash.startsWith('#/artist/')) {
+        const initArtist = decodeURIComponent(location.hash.slice('#/artist/'.length));
+        if (initArtist) openArtistView(initArtist, { pushHash: false });
+    }
+
+    // 3. Караоке-оверлей с синхронизацией по таймкодам (LRC)
+    let lyricsOverlayEl = null;
+    let parsedLyrics = [];
+    let activeLyricIdx = -1;
+    let loadedLyricsTrackKey = null;
+
+    const dockRightEl = document.querySelector('.player-dock-right');
+    let btnLyricsDock = document.getElementById('btn-lyrics-dock');
+    if (dockRightEl && !btnLyricsDock) {
+        btnLyricsDock = document.createElement('button');
+        btnLyricsDock.id = 'btn-lyrics-dock';
+        btnLyricsDock.className = 'control-btn';
+        btnLyricsDock.title = 'Текст песни (караоке)';
+        btnLyricsDock.setAttribute('aria-label', 'Текст песни');
+        btnLyricsDock.innerHTML = '<i class="fas fa-microphone-lines"></i>';
+        dockRightEl.insertBefore(btnLyricsDock, dockRightEl.firstChild);
+        btnLyricsDock.addEventListener('click', () => toggleLyricsOverlay());
+    }
+
+    function parseLrc(lrcText) {
+        if (!lrcText || typeof lrcText !== 'string') return [];
+        const lines = [];
+        const timeRe = /\[(\d{1,2}):(\d{2})(?:\.(\d{1,3}))?\]/g;
+        for (const rawLine of lrcText.split(/\r?\n/)) {
+            const matches = [...rawLine.matchAll(timeRe)];
+            if (!matches.length) continue;
+            const text = rawLine.replace(timeRe, '').trim();
+            if (!text) continue;
+            for (const m of matches) {
+                const mins = parseInt(m[1], 10);
+                const secs = parseInt(m[2], 10);
+                const frac = m[3] ? parseInt(m[3].padEnd(3, '0'), 10) / 1000 : 0;
+                lines.push({ time: mins * 60 + secs + frac, text });
+            }
+        }
+        return lines.sort((a, b) => a.time - b.time);
+    }
+
+    function syncLyricsButtonsState() {
+        const isOpen = Boolean(lyricsOverlayEl);
+        if (btnLyricsDock) btnLyricsDock.classList.toggle('active', isOpen);
+        const waveLyrBtn = document.getElementById('wave-lyrics-btn');
+        if (waveLyrBtn) waveLyrBtn.classList.toggle('active', isOpen);
+    }
+
+    function closeLyricsOverlay() {
+        if (lyricsOverlayEl) {
+            lyricsOverlayEl.remove();
+            lyricsOverlayEl = null;
+        }
+        parsedLyrics = [];
+        activeLyricIdx = -1;
+        loadedLyricsTrackKey = null;
+        syncLyricsButtonsState();
+    }
+
+    async function loadLyricsForCurrentTrack() {
+        if (!lyricsOverlayEl) return;
+        const bodyEl = lyricsOverlayEl.querySelector('#lyrics-scroll-body');
+        const titleEl = lyricsOverlayEl.querySelector('#lyrics-track-title');
+        const artistEl = lyricsOverlayEl.querySelector('#lyrics-track-artist');
+
+        const t = currentlyPlayingTrack;
+        if (!t) {
+            if (bodyEl) bodyEl.innerHTML = '<div class="empty-note">Включите любой трек, чтобы увидеть синхронный текст</div>';
+            return;
+        }
+
+        const key = trackKey(t);
+        loadedLyricsTrackKey = key;
+        if (titleEl) titleEl.textContent = t.title || 'Без названия';
+        if (artistEl) artistEl.textContent = t.artist || 'Неизвестный исполнитель';
+        if (bodyEl) bodyEl.innerHTML = '<div class="empty-note"><i class="fas fa-spinner fa-spin"></i> Ищем синхронизированный текст…</div>';
+
+        try {
+            let data = {};
+            if (hasValidId(t)) {
+                data = await fetchJson(`/tracks/${t.id}/lyrics`);
+            } else {
+                const q = new URLSearchParams({
+                    artist: t.artist || '',
+                    title: t.title || '',
+                    ...(t.duration ? { duration: String(t.duration) } : {})
+                });
+                data = await fetchJson(`/lyrics?${q.toString()}`);
+            }
+
+            if (!lyricsOverlayEl || loadedLyricsTrackKey !== key) return;
+
+            const synced = data && data.syncedLyrics ? parseLrc(data.syncedLyrics) : [];
+            parsedLyrics = synced;
+            activeLyricIdx = -1;
+
+            if (synced.length > 0) {
+                bodyEl.innerHTML = synced.map((line, i) => `
+                    <div class="lyrics-line lyrics-line--synced" data-idx="${i}" data-time="${line.time}">
+                        <span class="lyrics-time">${formatTime(line.time)}</span>
+                        <span class="lyrics-text">${escapeHtml(line.text)}</span>
+                    </div>
+                `).join('');
+                updateActiveLyricLine(audioPlayer.currentTime || 0, true);
+            } else if (data && (data.plainLyrics || data.lyrics)) {
+                bodyEl.innerHTML = `<div class="lyrics-plain">${escapeHtml(data.plainLyrics || data.lyrics)}</div>`;
+            } else {
+                bodyEl.innerHTML = '<div class="empty-note">Текст для этого трека не найден</div>';
+            }
+        } catch {
+            if (bodyEl) bodyEl.innerHTML = '<div class="error-note">Не удалось загрузить текст песни</div>';
+        }
+    }
+
+    function updateActiveLyricLine(currentTime, forceScroll = false) {
+        if (!lyricsOverlayEl || parsedLyrics.length === 0) return;
+        let idx = -1;
+        for (let i = 0; i < parsedLyrics.length; i++) {
+            if (currentTime + 0.15 >= parsedLyrics[i].time) idx = i;
+            else break;
+        }
+        if (idx === activeLyricIdx && !forceScroll) return;
+        activeLyricIdx = idx;
+
+        const lines = lyricsOverlayEl.querySelectorAll('.lyrics-line');
+        lines.forEach((el, i) => {
+            const isAct = i === idx;
+            el.classList.toggle('active', isAct);
+            if (isAct) {
+                el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+            }
+        });
+    }
+
+    function toggleLyricsOverlay() {
+        if (lyricsOverlayEl) {
+            closeLyricsOverlay();
+            return;
+        }
+        lyricsOverlayEl = document.createElement('div');
+        lyricsOverlayEl.className = 'lyrics-overlay';
+        lyricsOverlayEl.innerHTML = `
+            <div class="lyrics-header">
+                <div class="lyrics-header-titles">
+                    <span class="lyrics-header-artist" id="lyrics-track-artist">Караоке</span>
+                    <h2 class="lyrics-header-title" id="lyrics-track-title">Текст песни</h2>
+                </div>
+                <button class="ghost-btn" id="lyrics-close-btn">✕ Закрыть (Esc)</button>
+            </div>
+            <div class="lyrics-scroll" id="lyrics-scroll-body"></div>
+        `;
+        document.body.appendChild(lyricsOverlayEl);
+
+        lyricsOverlayEl.querySelector('#lyrics-close-btn')?.addEventListener('click', closeLyricsOverlay);
+        lyricsOverlayEl.querySelector('#lyrics-scroll-body')?.addEventListener('click', (e) => {
+            const lineEl = e.target.closest('.lyrics-line--synced');
+            if (!lineEl) return;
+            const t = parseFloat(lineEl.dataset.time);
+            if (isFinite(t)) {
+                audioPlayer.currentTime = t;
+                if (audioPlayer.paused) audioPlayer.play().catch(() => {});
+                updateActiveLyricLine(t, true);
+            }
+        });
+
+        syncLyricsButtonsState();
+        loadLyricsForCurrentTrack();
+    }
+
+    audioPlayer.addEventListener('timeupdate', () => {
+        if (!lyricsOverlayEl) return;
+        const curKey = trackKey(currentlyPlayingTrack);
+        if (curKey && curKey !== loadedLyricsTrackKey) {
+            loadLyricsForCurrentTrack();
+            return;
+        }
+        updateActiveLyricLine(audioPlayer.currentTime || 0);
+    });
+
+    document.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape' && lyricsOverlayEl) {
+            closeLyricsOverlay();
+        }
+    });
+
 });
