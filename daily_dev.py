@@ -78,7 +78,7 @@ REASONING_LOOP_ABORT_CHARS = 35000
 
 # Бюджет контекста файлов
 MAX_FILE_CONTEXT_CHARS = 65000
-MAX_TOTAL_CONTEXT_CHARS = 110000
+MAX_TOTAL_CONTEXT_CHARS = 115000
 CONTEXT_GLOBS = ("*.py", "*.html", "*.css", "*.js", "*.json")
 
 # Файлы и папки, которые агент никогда не читает в контекст и не модифицирует
@@ -105,7 +105,7 @@ LAZY_PATTERNS = [
     "# previous code",
 ]
 
-SHRINK_GUARD_RATIO = 0.80
+SHRINK_GUARD_RATIO = 0.85
 MIN_OLD_LEN_FOR_SHRINK_CHECK = 300
 
 # Git-автоматика
@@ -707,21 +707,38 @@ def parse_and_apply_files(response_text: str) -> Tuple[bool, Optional[str], Dict
     if not response_text or not isinstance(response_text, str):
         return False, "Ответ модели пуст", {}
 
-    matches = list(re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)=== END FILE ===", response_text, re.DOTALL))
-    if not matches:
-        matches = list(re.finditer(r"```(?:[a-zA-Z0-9_\-]+:)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9]+)\r?\n(.*?)```", response_text, re.DOTALL))
+    file_matches = [("FILE", m.group(1), m.group(2)) for m in re.finditer(r"=== FILE:\s*([^\r\n]+)\s*===\r?\n(.*?)=== END FILE ===", response_text, re.DOTALL)]
+    append_matches = [("APPEND", m.group(1), m.group(2)) for m in re.finditer(r"=== APPEND:\s*([^\r\n]+)\s*===\r?\n(.*?)=== END APPEND ===", response_text, re.DOTALL)]
+    ops_raw = file_matches + append_matches
+    if not ops_raw:
+        ops_raw = [("FILE", m.group(1), m.group(2)) for m in re.finditer(r"```(?:[a-zA-Z0-9_\-]+:)?([a-zA-Z0-9_\-\./]+\.[a-zA-Z0-9]+)\r?\n(.*?)```", response_text, re.DOTALL)]
 
-    if not matches:
-        return False, "Не найдены блоки файлов '=== FILE: путь ==='. Соблюдай предписанный формат!", {}
+    if not ops_raw:
+        return False, "Не найдены блоки '=== FILE: путь ===' или '=== APPEND: путь ==='. Соблюдай формат!", {}
 
     staged_ops: List[Tuple[Path, str, str]] = []
     snapshots: Dict[Path, Optional[str]] = {}
 
-    for m in matches:
-        rel_path = m.group(1).strip("`* \t\r\n").lstrip("/\\")
-        file_code = sanitize_code(m.group(2))
-
+    for mode, raw_path, raw_code in ops_raw:
+        rel_path = raw_path.strip("`* \t\r\n").lstrip("/\\")
+        chunk_code = sanitize_code(raw_code)
         target = (REPO_DIR / rel_path).resolve()
+
+        if mode == "FILE" and target.exists() and rel_path in ("static/js/app.js", "static/css/style.css"):
+            old_sz = len(target.read_text(encoding="utf-8", errors="ignore"))
+            if len(chunk_code) < old_sz * 0.85:
+                return False, f"Запрещено переписывать {rel_path} целиком с потерей кода! Используй блок === APPEND: {rel_path} === ... === END APPEND ===", {}
+
+        if mode == "APPEND" and target.exists():
+            orig_text = target.read_text(encoding="utf-8", errors="ignore")
+            if rel_path.endswith("app.js") and orig_text.rstrip().endswith("});"):
+                idx = orig_text.rfind("});")
+                file_code = orig_text[:idx].rstrip() + "\n\n    // --- Авто-дополнение ---\n" + chunk_code + "\n});"
+            else:
+                file_code = orig_text.rstrip() + "\n\n" + chunk_code
+        else:
+            file_code = chunk_code
+
         try:
             target.relative_to(REPO_DIR)
         except ValueError:
@@ -819,7 +836,14 @@ def call_gemma_agent(task_text: str, error_feedback: Optional[str] = None) -> st
         "# полный рабочий код файла без пропусков\n"
         "=== END FILE ===\n\n"
         "3. МИНИМАЛЬНЫЙ ДИФФ: выводи блоки ТОЛЬКО для файлов, которые ты реально изменяешь или создаешь.\n"
-        "4. ПОЛНАЯ ПЕРЕЗАПИСЬ: каждый файл пишется целиком от начала до конца.\n"
+        "4. РЕЖИМ ДОПИСЫВАНИЯ ДЛЯ ФРОНТЕНДА: для крупных файлов static/js/app.js и static/css/style.css ЗАПРЕЩЕНО выводить весь файл целиком! Используй ТОЛЬКО блок дописывания:\n\n"
+        "=== APPEND: static/css/style.css ===\n"
+        "/* только новые CSS-классы */\n"
+        "=== END APPEND ===\n\n"
+        "=== APPEND: static/js/app.js ===\n"
+        "// только новые функции и слушатели событий (код автоматически вставляется внутрь DOMContentLoaded перед финальной }); поэтому НЕ оборачивай его в DOMContentLoaded повторно; переменные tracklist, audioPlayer, currentlyPlayingTrack, currentView, playFromList, createTrackRow, switchView, showToast, fetchJson уже доступны!)\n"
+        "=== END APPEND ===\n\n"
+        "Для небольших файлов (.py, .html, тестов) используй обычный === FILE: путь === ... === END FILE ===.\n"
         "5. ЗАПРЕЩЕНО использовать комментарии вида '# rest of code', '// ... keep existing'.\n"
         "6. Сохраняй контракты API, пути эндпоинтов и целостность базы данных."
     )
