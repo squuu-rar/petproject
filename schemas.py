@@ -1,6 +1,7 @@
 from pydantic import BaseModel
 from typing import Optional, Literal, List
 
+
 class TrackRead(BaseModel):
     id: int
     path: str
@@ -18,16 +19,36 @@ class TrackRead(BaseModel):
     liked: Optional[bool] = False
     last_accessed: Optional[float] = None
 
+
+class AlbumRead(BaseModel):
+    title: str
+    artist: Optional[str] = None
+    year: Optional[int] = None
+    cover_path: Optional[str] = None
+    track_count: int = 0
+    browse_id: Optional[str] = None
+    tracks: List[TrackRead] = []
+
+
+class SimilarArtistRead(BaseModel):
+    name: str
+    avatar: Optional[str] = None
+
+
 class ArtistRead(BaseModel):
     name: str
-    avatar: Optional[str]
+    avatar: Optional[str] = None
     track_count: int
     tracks: List[TrackRead]
+    albums: List[AlbumRead] = []
+    similar_artists: List[SimilarArtistRead] = []
+
 
 class HistoryCreate(BaseModel):
     track_id: int
     event: Literal["play", "skip", "finish"]
     elapsed_seconds: float = 0.0
+
 
 class HistoryItemRead(BaseModel):
     history_id: int

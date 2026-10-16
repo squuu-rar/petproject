@@ -1,3 +1,4 @@
+import re
 import os
 import urllib.parse
 import urllib.request
@@ -130,7 +131,8 @@ def get_remote_artist_avatar(artist_name: str, ytmusic: Optional[Any] = None, ti
             if results and isinstance(results, list):
                 thumbs = results[0].get("thumbnails") or []
                 if thumbs and thumbs[-1].get("url"):
-                    avatar = thumbs[-1]["url"]
+                    raw_url = thumbs[-1]["url"]
+                    avatar = re.sub(r"=w\d+-h\d+[^&\s]*", "=w540-h540-p-l90-rj", raw_url)
         except Exception:
             avatar = None
         finally:
