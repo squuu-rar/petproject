@@ -2062,4 +2062,32 @@ document.addEventListener('DOMContentLoaded', () => {
     }).catch(() => {
         tracklist.innerHTML = '<div class="empty-note" style="padding:36px;">Ошибка загрузки медиатеки</div>';
     });
+
+    // === GLOBAL KEYBOARD SHORTCUTS ===
+    document.addEventListener('keydown', (e) => {
+        const tag = (e.target && e.target.tagName) ? e.target.tagName.toUpperCase() : '';
+        if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
+        if (e.ctrlKey || e.altKey || e.metaKey) return;
+
+        if (e.code === 'Space' && !e.target.closest('button, a, [role="button"]')) {
+            e.preventDefault();
+            togglePlay();
+        } else if (e.code === 'ArrowRight' && audioPlayer.duration && isFinite(audioPlayer.duration)) {
+            e.preventDefault();
+            audioPlayer.currentTime = Math.min(audioPlayer.duration, (audioPlayer.currentTime || 0) + 5);
+        } else if (e.code === 'ArrowLeft' && audioPlayer.duration && isFinite(audioPlayer.duration)) {
+            e.preventDefault();
+            audioPlayer.currentTime = Math.max(0, (audioPlayer.currentTime || 0) - 5);
+        } else if (e.code === 'KeyL' && currentlyPlayingTrack) {
+            e.preventDefault();
+            applyLike(currentlyPlayingTrack);
+        } else if (e.code === 'KeyN') {
+            e.preventDefault();
+            nextTrack(true);
+        } else if (e.code === 'KeyM') {
+            e.preventDefault();
+            toggleMute();
+        }
+    });
+
 });
