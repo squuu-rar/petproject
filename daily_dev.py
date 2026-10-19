@@ -131,7 +131,7 @@ NEVER_COMMIT_SUFFIXES = {".db", ".sqlite", ".sqlite3", ".log", ".pyc", ".pem", "
                          ".mp3", ".flac", ".m4a", ".ogg", ".opus", ".wav", ".webm", ".aac",
                          ".zip", ".tar", ".gz", ".7z", ".part", ".tmp", ".swp"}
 # Новые (неотслеживаемые) файлы берём только такие; изменения уже отслеживаемых — любые разрешённые выше
-NEW_FILE_SUFFIXES = {".py", ".js", ".css", ".html", ".md", ".txt", ".json", ".svg", ".toml",
+NEW_FILE_SUFFIXES = {".py", ".md", ".txt", ".json", ".svg", ".toml",
                      ".yml", ".yaml", ".cfg", ".ini", ".sh", ".service", ".timer"}
 NEW_FILE_NAMES = {"Dockerfile", "docker-compose.yml", "requirements.txt", "Makefile", "LICENSE",
                   ".gitignore", ".dockerignore", ".env.example", ".env.sample"}
@@ -620,7 +620,7 @@ def get_repo_context(task_text: str = "") -> str:
             continue
         if is_frontend_task and p.suffix == ".py" and rel.name not in ("main.py", "schemas.py"):
             continue
-        if is_backend_task and p.suffix in (".js", ".html", ".css"):
+        if is_backend_task and p.suffix in ( ".html"):
             continue
         candidates.append(p)
 
@@ -646,6 +646,8 @@ def get_repo_context(task_text: str = "") -> str:
         try:
             text = p.read_text(encoding="utf-8", errors="ignore")
         except Exception:
+            continue
+        if "static" in rel.parts or rel.suffix in (".js", ".css", ".html"):
             continue
         if len(text) > MAX_FILE_CONTEXT_CHARS:
             text = text[:MAX_FILE_CONTEXT_CHARS] + trunc_notice

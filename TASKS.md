@@ -48,7 +48,7 @@
 - [x] frontend: back navigation for the artist view with hash route #/artist/<name> and «← Назад» button
 - [x] frontend: synced karaoke lyrics overlay with live active-line tracking via audio.timeupdate and line-click seek
 
-- [ ] api: update GET /health in main.py to return {"status": "ok", "db": True} after verifying a simple SELECT 1 on SQLite db
+- [x] api: update GET /health in main.py to return {"status": "ok", "db": True} after verifying a simple SELECT 1 on SQLite db
 - [ ] cache: prefetch the next 2 tracks of the queue in the background — add POST /cache/prefetch accepting {"track_ids": list[int]} in main.py (and PrefetchRequest in schemas.py) that schedules cache_manager.get_or_download via asyncio.create_task for non-local tracks without cache_path and returns {"status": "ok", "scheduled": count}
 - [ ] db: playlists(id, name, created_at) and playlist_tracks(playlist_id, track_id, position) tables in init_db() in db.py, position as an integer index, unique(playlist_id, track_id)
 - [ ] api: POST /playlists {name} and GET /playlists in main.py (with schemas in schemas.py and helpers in db.py) listing playlists with track_count; tracks may be local or remote

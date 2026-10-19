@@ -172,7 +172,12 @@ app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
 
 @app.get("/health")
 def health():
-    return {"status": "ok"}
+    conn = get_db()
+    try:
+        conn.execute("SELECT 1").fetchone()
+        return {"status": "ok", "db": True}
+    finally:
+        conn.close()
 
 
 def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
