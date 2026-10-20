@@ -2090,4 +2090,25 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     });
 
+    // === MEDIA SESSION API ===
+    if ('mediaSession' in navigator) {
+        audioPlayer.addEventListener('play', () => {
+            if (!currentlyPlayingTrack) return;
+            navigator.mediaSession.metadata = new MediaMetadata({
+                title: currentlyPlayingTrack.title || 'Без названия',
+                artist: currentlyPlayingTrack.artist || 'Неизвестный исполнитель',
+                album: currentlyPlayingTrack.album || '',
+                artwork: [{ src: currentlyPlayingTrack.cover_path || DEFAULT_COVER }]
+            });
+            navigator.mediaSession.playbackState = 'playing';
+        });
+        audioPlayer.addEventListener('pause', () => {
+            navigator.mediaSession.playbackState = 'paused';
+        });
+        navigator.mediaSession.setActionHandler('play', () => togglePlay());
+        navigator.mediaSession.setActionHandler('pause', () => togglePlay());
+        navigator.mediaSession.setActionHandler('previoustrack', () => prevTrack());
+        navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack(true));
+    }
+
 });
