@@ -1,3 +1,4 @@
+import asyncio
 import json
 import re
 import time
@@ -17,7 +18,7 @@ from db import (
     init_db, get_track_by_id, get_tracks_paginated, get_playback_history,
     get_db, save_remote_track, get_all_tracks_with_play_counts
 )
-from schemas import TrackRead, ArtistRead, AlbumRead, HistoryCreate, HistoryItemRead
+from schemas import TrackRead, PrefetchRequest, ArtistRead, AlbumRead, HistoryCreate, HistoryItemRead
 from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
 from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
 from cache_manager import CacheManager
@@ -858,3 +859,21 @@ def get_track_lyrics_by_id(track_id: int):
 @app.get("/lyrics")
 def get_track_lyrics(artist: str, title: str, duration: Optional[float] = None):
     return fetch_lyrics(artist, title, duration)
+
+
+@app.post("/cache/prefetch")
+async def prefetch_tracks(payload: PrefetchRequest):
+    if cache_manager is None:
+        return {"status": "ok", "scheduled": 0}
+
+    scheduled = 0
+    for track_id in payload.track_ids:
+        track = get_track_by_id(track_id)
+        if not track:
+            continue
+        if track.get("source") == "local" or track.get("cache_path"):
+            continue
+        asyncio.create_task(cache_manager.get_or_download(track_id))
+        scheduled += 1
+
+    return {"status": "ok", "scheduled": scheduled}

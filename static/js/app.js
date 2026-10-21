@@ -716,6 +716,27 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function prefetchNextQueueTracks() {
+        const startIdx = playbackQueue.index + 1;
+        const candidates = playbackQueue.queue.slice(startIdx, startIdx + 2);
+        if (!candidates.length) return;
+        const ids = [];
+        for (const t of candidates) {
+            if (!t || t.source === 'local' || t.cache_path) continue;
+            try {
+                const id = await ensureTrackId(t);
+                if (id && id !== -1) ids.push(Number(id));
+            } catch {}
+        }
+        if (ids.length > 0) {
+            fetch('/cache/prefetch', {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json' },
+                body: JSON.stringify({ track_ids: ids })
+            }).catch(() => {});
+        }
+    }
+
     async function prefetchWaveIfNeeded() {
         if (queueMode !== 'wave' || isPrefetchingWave) return;
         if (playbackQueue.length - playbackQueue.index > 3) return;
@@ -1159,6 +1180,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         sendHistory(track.id, 'play', 0);
         prefetchWaveIfNeeded();
+        prefetchNextQueueTracks();
     }
 
     async function togglePlay() {

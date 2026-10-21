@@ -70,3 +70,7 @@ class HistoryItemRead(BaseModel):
     cache_path: Optional[str] = None
     liked: Optional[bool] = None
     last_accessed: Optional[float] = None
+
+
+class PrefetchRequest(BaseModel):
+    track_ids: List[int] = []
