@@ -2106,6 +2106,12 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (e.code === 'KeyN') {
             e.preventDefault();
             nextTrack(true);
+        } else if (e.code === 'ArrowUp') {
+            e.preventDefault();
+            setAppVolume((audioPlayer.volume || 0) + 0.05);
+        } else if (e.code === 'ArrowDown') {
+            e.preventDefault();
+            setAppVolume((audioPlayer.volume || 0) - 0.05);
         } else if (e.code === 'KeyM') {
             e.preventDefault();
             toggleMute();
