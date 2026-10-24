@@ -9,6 +9,7 @@ def get_db():
     conn = sqlite3.connect(DB_PATH)
     conn.row_factory = sqlite3.Row
     conn.execute("PRAGMA journal_mode=WAL")
+    conn.execute("PRAGMA foreign_keys=ON")
     return conn
 
 def init_db():
@@ -41,6 +42,23 @@ def init_db():
             elapsed_seconds REAL,
             timestamp REAL,
             FOREIGN KEY (track_id) REFERENCES tracks(id)
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS playlists (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            created_at REAL DEFAULT (strftime('%s', 'now'))
+        )
+    """)
+    cur.execute("""
+        CREATE TABLE IF NOT EXISTS playlist_tracks (
+            playlist_id INTEGER,
+            track_id INTEGER,
+            position INTEGER,
+            PRIMARY KEY (playlist_id, track_id),
+            FOREIGN KEY (playlist_id) REFERENCES playlists(id) ON DELETE CASCADE,
+            FOREIGN KEY (track_id) REFERENCES tracks(id) ON DELETE CASCADE
         )
     """)
     cur.execute("PRAGMA table_info(tracks)")
