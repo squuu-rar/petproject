@@ -15,10 +15,12 @@ from typing import Any, Dict, List, Optional
 from ytmusicapi import YTMusic
 
 from db import (
+    create_playlist,
+    get_playlists,
     init_db, get_track_by_id, get_tracks_paginated, get_playback_history,
     get_db, save_remote_track, get_all_tracks_with_play_counts
 )
-from schemas import TrackRead, PrefetchRequest, ArtistRead, AlbumRead, HistoryCreate, HistoryItemRead
+from schemas import TrackRead, PlaylistCreate, PlaylistRead, PrefetchRequest, ArtistRead, AlbumRead, HistoryCreate, HistoryItemRead
 from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
 from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
 from cache_manager import CacheManager
@@ -877,3 +879,16 @@ async def prefetch_tracks(payload: PrefetchRequest):
         scheduled += 1
 
     return {"status": "ok", "scheduled": scheduled}
+
+
+@app.post("/playlists")
+def api_create_playlist(payload: PlaylistCreate):
+    name = (payload.name or "").strip()
+    if not name:
+        from fastapi import HTTPException
+        raise HTTPException(status_code=400, detail="Playlist name cannot be empty")
+    return create_playlist(name)
+
+@app.get("/playlists")
+def api_get_playlists():
+    return get_playlists()

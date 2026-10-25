@@ -221,3 +221,61 @@ def get_all_tracks_with_play_counts() -> List[Dict[str, Any]]:
 
 if __name__ == "__main__":
     init_db()
+
+
+def init_playlists_tables():
+    conn = get_db()
+    try:
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS playlists (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                name TEXT NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+            )
+        """)
+        conn.execute("""
+            CREATE TABLE IF NOT EXISTS playlist_tracks (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                playlist_id INTEGER NOT NULL,
+                track_id INTEGER NOT NULL,
+                position INTEGER DEFAULT 0,
+                FOREIGN KEY (playlist_id) REFERENCES playlists (id) ON DELETE CASCADE
+            )
+        """)
+        conn.commit()
+    finally:
+        conn.close()
+
+def create_playlist(name: str) -> dict:
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("INSERT INTO playlists (name) VALUES (?)", (name,))
+        playlist_id = cursor.lastrowid
+        conn.commit()
+        return {"id": playlist_id, "name": name, "track_count": 0}
+    finally:
+        conn.close()
+
+def get_playlists() -> list:
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        cursor = conn.cursor()
+        cursor.execute("""
+            SELECT p.id, p.name, COUNT(pt.id) as track_count
+            FROM playlists p
+            LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
+            GROUP BY p.id, p.name
+            ORDER BY p.id DESC
+        """)
+        rows = cursor.fetchall()
+        return [
+            {"id": row["id"] if isinstance(row, dict) else row[0],
+             "name": row["name"] if isinstance(row, dict) else row[1],
+             "track_count": row["track_count"] if isinstance(row, dict) else row[2]}
+            for row in rows
+        ]
+    finally:
+        conn.close()

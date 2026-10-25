@@ -74,3 +74,12 @@ class HistoryItemRead(BaseModel):
 
 class PrefetchRequest(BaseModel):
     track_ids: List[int] = []
+
+
+class PlaylistCreate(BaseModel):
+    name: str
+
+class PlaylistRead(BaseModel):
+    id: int
+    name: str
+    track_count: int = 0

@@ -51,7 +51,7 @@
 - [x] api: update GET /health in main.py to return {"status": "ok", "db": True} after verifying a simple SELECT 1 on SQLite db
 - [x] cache: prefetch the next 2 tracks of the queue in the background — add POST /cache/prefetch accepting {"track_ids": list[int]} in main.py (and PrefetchRequest in schemas.py) that schedules cache_manager.get_or_download via asyncio.create_task for non-local tracks without cache_path and returns {"status": "ok", "scheduled": count}
 - [x] db: playlists(id, name, created_at) and playlist_tracks(playlist_id, track_id, position) tables in init_db() in db.py, position as an integer index, unique(playlist_id, track_id)
-- [ ] api: POST /playlists {name} and GET /playlists in main.py (with schemas in schemas.py and helpers in db.py) listing playlists with track_count; tracks may be local or remote
+- [x] api: POST /playlists {name} and GET /playlists in main.py (with schemas in schemas.py and helpers in db.py) listing playlists with track_count; tracks may be local or remote
 - [ ] api: POST /playlists/{id}/tracks {track_id} appends at the end (position = max+1) in db.py and main.py; DELETE /playlists/{id}/tracks/{track_id} removes the entry and re-indexes remaining positions
 - [ ] api: GET /tracks/{id}/download in main.py streaming the file with a Content-Disposition: attachment header (local tracks or cached remote tracks only; uncached remote tracks return 404)
 - [ ] wave: skip-streak adaptation in db.py and wave_engine.py — add helper get_consecutive_skips() in db.py; if >= 2 consecutive skips in history, inject one extra liked local track at the start of generate_wave

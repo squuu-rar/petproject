@@ -32,3 +32,16 @@ def test_cache_prefetch(monkeypatch):
     assert resp.status_code == 200
     assert resp.json() == {"status": "ok", "scheduled": 2}
     assert scheduled_ids == [3, 4]
+
+
+def test_playlists_endpoints():
+    post_resp = client.post("/playlists", json={"name": "Test Favorites"})
+    assert post_resp.status_code == 200
+    data = post_resp.json()
+    assert data["name"] == "Test Favorites"
+    assert data["track_count"] == 0
+
+    get_resp = client.get("/playlists")
+    assert get_resp.status_code == 200
+    playlists = get_resp.json()
+    assert any(p["name"] == "Test Favorites" for p in playlists)
