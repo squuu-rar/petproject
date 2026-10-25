@@ -1,3 +1,14 @@
+import socket
+import shutil
+from fastapi import UploadFile, File, Form, Request
+from db import (
+    bulk_import_tracks,
+    get_playlist_tracks,
+    add_tracks_to_playlist,
+    get_or_create_playlist,
+)
+from schemas import ImportFolderRequest, ImportResult, PlaylistAddTracksRequest
+from importer import scan_directory_for_audio, extract_audio_metadata, UPLOADS_DIR, AUDIO_EXTENSIONS
 import asyncio
 import json
 import re
@@ -722,7 +733,7 @@ def get_album_tracks(
 
 @app.get("/tracks", response_model=list[TrackRead])
 def list_tracks(
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
     order: str = Query("asc", pattern="^(asc|desc)$"),
@@ -733,7 +744,7 @@ def list_tracks(
 
 @app.get("/favorites", response_model=list[TrackRead])
 def list_favorites(
-    limit: int = Query(20, ge=1, le=100),
+    limit: int = Query(100, ge=1, le=5000),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
     order: str = Query("asc", pattern="^(asc|desc)$")
@@ -892,3 +903,88 @@ def api_create_playlist(payload: PlaylistCreate):
 @app.get("/playlists")
 def api_get_playlists():
     return get_playlists()
+
+
+@app.post("/import/folder", response_model=ImportResult)
+def api_import_local_folder(payload: ImportFolderRequest):
+    try:
+        scanned = scan_directory_for_audio(payload.folder_path)
+    except FileNotFoundError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Ошибка сканирования папки: {e}")
+
+    if not scanned:
+        raise HTTPException(status_code=400, detail="В указанной папке не найдено аудиофайлов (.mp3, .flac, .m4a, .ogg, .wav)")
+
+    result = bulk_import_tracks(
+        scanned,
+        target_mode=payload.target_mode,
+        playlist_name=payload.playlist_name
+    )
+    return result
+
+
+@app.post("/import/upload", response_model=ImportResult)
+async def api_import_uploaded_files(request: Request):
+    form = await request.form()
+    target_mode = str(form.get("target_mode") or "both")
+    playlist_name = str(form.get("playlist_name") or "Импорт из Яндекс Музыки")
+    files = form.getlist("files")
+    saved_meta = []
+    for uf in files:
+        orig_name = Path(uf.filename or "track.mp3").name
+        ext = Path(orig_name).suffix.lower()
+        if ext not in AUDIO_EXTENSIONS:
+            continue
+        dest = UPLOADS_DIR / orig_name
+        if dest.exists():
+            stem = dest.stem
+            dest = UPLOADS_DIR / f"{stem}_{int(time.time() * 1000) % 100000}{ext}"
+        with dest.open("wb") as out_f:
+            shutil.copyfileobj(uf.file, out_f)
+        saved_meta.append(extract_audio_metadata(dest))
+
+    if not saved_meta:
+        raise HTTPException(status_code=400, detail="Нет поддерживаемых аудиофайлов в загрузке")
+
+    mode = target_mode if target_mode in ("favorites", "playlist", "both") else "both"
+    return bulk_import_tracks(saved_meta, target_mode=mode, playlist_name=playlist_name)
+
+
+@app.get("/playlists/{playlist_id}/tracks", response_model=list[TrackRead])
+def api_get_playlist_tracks(playlist_id: int, limit: int = Query(2000, ge=1, le=5000), offset: int = Query(0, ge=0)):
+    return get_playlist_tracks(playlist_id, limit=limit, offset=offset)
+
+
+@app.post("/playlists/{playlist_id}/tracks")
+def api_add_tracks_to_playlist(playlist_id: int, payload: PlaylistAddTracksRequest):
+    added = add_tracks_to_playlist(playlist_id, payload.track_ids)
+    return {"status": "ok", "added": added}
+
+
+@app.get("/network-info")
+def api_get_network_info(request: Request):
+    lan_ip = "127.0.0.1"
+    try:
+        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+        s.connect(("8.8.8.8", 80))
+        lan_ip = s.getsockname()[0]
+        s.close()
+    except Exception:
+        pass
+
+    tunnel_url = None
+    tunnel_file = BASE_DIR / ".tunnel_url"
+    if tunnel_file.exists():
+        try:
+            tunnel_url = tunnel_file.read_text(encoding="utf-8").strip() or None
+        except Exception:
+            pass
+
+    port = request.url.port or 8001
+    return {
+        "lan_url": f"http://{lan_ip}:{port}",
+        "tunnel_url": tunnel_url,
+        "host": request.headers.get("host", f"{lan_ip}:{port}")
+    }

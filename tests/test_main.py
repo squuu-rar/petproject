@@ -35,6 +35,8 @@ def test_cache_prefetch(monkeypatch):
 
 
 def test_playlists_endpoints():
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
     post_resp = client.post("/playlists", json={"name": "Test Favorites"})
     assert post_resp.status_code == 200
     data = post_resp.json()
@@ -45,3 +47,26 @@ def test_playlists_endpoints():
     assert get_resp.status_code == 200
     playlists = get_resp.json()
     assert any(p["name"] == "Test Favorites" for p in playlists)
+
+
+def test_bulk_folder_import(tmp_path):
+    from fastapi.testclient import TestClient
+    client = TestClient(app)
+    music_dir = tmp_path / "yandex_export"
+    music_dir.mkdir()
+    (music_dir / "01. Кино - Пачка сигарет.mp3").write_bytes(b"ID3-fake-audio-1")
+    (music_dir / "02. Наутилус Помпилиус - Крылья.mp3").write_bytes(b"ID3-fake-audio-2")
+
+    resp = client.post("/import/folder", json={
+        "folder_path": str(music_dir),
+        "target_mode": "both",
+        "playlist_name": "Яндекс Коллекция"
+    })
+    assert resp.status_code == 200
+    data = resp.json()
+    assert data["imported_count"] == 2
+    assert data["playlist_id"] is not None
+
+    pl_tracks = client.get(f"/playlists/{data['playlist_id']}/tracks").json()
+    assert len(pl_tracks) == 2
+    assert any(t["artist"] == "Кино" for t in pl_tracks)

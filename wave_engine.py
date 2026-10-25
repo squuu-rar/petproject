@@ -284,3 +284,57 @@ class WaveEngine:
         random.shuffle(mixed_batch)
 
         return mixed_batch
+
+
+# === РАСШИРЕННЫЙ ПРОФИЛЬ ВКУСА ДЛЯ 1000+ ИМПОРТИРОВАННЫХ ТРЕКОВ ===
+import random as _wave_random
+from db import get_taste_profile_artists as _get_taste_artists, get_db as _wave_get_db
+
+_orig_generate_wave = WaveEngine.generate_wave
+
+async def _enhanced_generate_wave(self, limit: int = 20):
+    try:
+        base_results = await _orig_generate_wave(self, limit=limit)
+    except Exception:
+        base_results = []
+
+    taste_artists = _get_taste_artists(limit=60)
+    if not taste_artists:
+        return base_results
+
+    # Выбираем случайную подвыборку любимых/импортированных треков из локальной коллекции,
+    # чтобы волна сочетала любимые треки из Яндекс Музыки и свежие рекомендации по этим же артистам
+    conn = _wave_get_db()
+    local_pool = []
+    try:
+        rows = conn.execute("""
+            SELECT DISTINCT t.*
+            FROM tracks t
+            LEFT JOIN playlist_tracks pt ON t.id = pt.track_id
+            WHERE t.liked = 1 OR pt.playlist_id IS NOT NULL
+            ORDER BY RANDOM()
+            LIMIT ?
+        """, (max(10, limit // 2),)).fetchall()
+        for r in rows:
+            d = dict(r)
+            d["liked"] = bool(d.get("liked", 0))
+            local_pool.append(d)
+    finally:
+        conn.close()
+
+    # Если внешний движок вернул мало треков или нужно разнообразить волну по артистам из импорта
+    seen_ids = {t.get("id") for t in base_results if t.get("id") and t.get("id") != -1}
+    seen_titles = {(t.get("artist", "").lower(), t.get("title", "").lower()) for t in base_results}
+
+    combined = list(base_results)
+    for loc in local_pool:
+        key = (str(loc.get("artist") or "").lower(), str(loc.get("title") or "").lower())
+        if loc["id"] not in seen_ids and key not in seen_titles:
+            combined.append(loc)
+            seen_ids.add(loc["id"])
+            seen_titles.add(key)
+
+    _wave_random.shuffle(combined)
+    return combined[:limit]
+
+WaveEngine.generate_wave = _enhanced_generate_wave

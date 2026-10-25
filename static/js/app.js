@@ -2139,4 +2139,367 @@ document.addEventListener('DOMContentLoaded', () => {
         navigator.mediaSession.setActionHandler('nexttrack', () => nextTrack(true));
     }
 
+    // === ARTIST CARD VOLUME CONTROL ===
+    function getEffectiveVolume() {
+        if (typeof audioPlayer === 'undefined' || !audioPlayer) return 1;
+        return audioPlayer.muted ? 0 : (typeof audioPlayer.volume === 'number' ? audioPlayer.volume : 1);
+    }
+
+    function applyUnifiedVolume(val) {
+        const clamped = Math.max(0, Math.min(1, Number(val)));
+        if (typeof setAppVolume === 'function') {
+            setAppVolume(clamped);
+        } else if (typeof audioPlayer !== 'undefined' && audioPlayer) {
+            audioPlayer.muted = clamped === 0;
+            audioPlayer.volume = clamped;
+        }
+        syncArtistVolumeUI();
+    }
+
+    function syncArtistVolumeUI() {
+        const vol = getEffectiveVolume();
+        const pct = Math.round(vol * 100);
+        document.querySelectorAll('.artist-volume-control').forEach(ctrl => {
+            const slider = ctrl.querySelector('.artist-vol-slider');
+            const label = ctrl.querySelector('.artist-vol-pct');
+            const btn = ctrl.querySelector('.artist-vol-btn');
+            if (slider) {
+                slider.value = String(vol);
+                slider.valueAsNumber = vol;
+            }
+            if (slider) {
+                slider.style.background = `linear-gradient(to right, #ff453a ${pct}%, rgba(255,255,255,0.22) ${pct}%)`;
+            }
+            if (label) label.textContent = `${pct}%`;
+            if (btn) {
+                btn.innerHTML = vol === 0
+                    ? '<i class="fas fa-volume-mute"></i>'
+                    : (vol < 0.5 ? '<i class="fas fa-volume-down"></i>' : '<i class="fas fa-volume-up"></i>');
+            }
+        });
+    }
+
+    function mountArtistVolumeControl() {
+        const candidates = document.querySelectorAll(
+            '.artist-actions, .artist-header-actions, .artist-controls, .artist-buttons'
+        );
+        let actionRows = Array.from(candidates);
+
+        if (actionRows.length === 0) {
+            document.querySelectorAll('button').forEach(btn => {
+                const txt = (btn.textContent || '').trim();
+                if (txt.includes('Поток') && btn.parentElement) {
+                    actionRows.push(btn.parentElement);
+                }
+            });
+        }
+
+        actionRows.forEach(row => {
+            if (row.querySelector('.artist-volume-control')) return;
+
+            const wrapper = document.createElement('div');
+            wrapper.className = 'artist-volume-control';
+            wrapper.title = 'Громкость (колёсико мыши или ↑/↓)';
+            wrapper.innerHTML = `
+                <button type="button" class="artist-vol-btn" title="Выключить/включить звук (M)">
+                    <i class="fas fa-volume-up"></i>
+                </button>
+                <input type="range" class="artist-vol-slider" min="0" max="1" step="0.01" value="1">
+                <span class="artist-vol-pct">100%</span>
+            `;
+
+            const btn = wrapper.querySelector('.artist-vol-btn');
+            const slider = wrapper.querySelector('.artist-vol-slider');
+            let prevVol = getEffectiveVolume() || 0.8;
+
+            btn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                const current = getEffectiveVolume();
+                if (current > 0) {
+                    prevVol = current;
+                    applyUnifiedVolume(0);
+                } else {
+                    applyUnifiedVolume(prevVol > 0 ? prevVol : 0.8);
+                }
+            });
+
+            slider.addEventListener('input', (e) => {
+                e.stopPropagation();
+                const v = parseFloat(e.target.value);
+                if (v > 0) prevVol = v;
+                applyUnifiedVolume(v);
+            });
+
+            wrapper.addEventListener('wheel', (e) => {
+                e.preventDefault();
+                const step = e.deltaY < 0 ? 0.05 : -0.05;
+                applyUnifiedVolume(getEffectiveVolume() + step);
+            }, { passive: false });
+
+            row.appendChild(wrapper);
+            syncArtistVolumeUI();
+        });
+    }
+
+    if (typeof audioPlayer !== 'undefined' && audioPlayer) {
+        audioPlayer.addEventListener('volumechange', syncArtistVolumeUI);
+    }
+
+    const artistVolObserver = new MutationObserver(() => {
+        mountArtistVolumeControl();
+    });
+    artistVolObserver.observe(document.body, { childList: true, subtree: true });
+    mountArtistVolumeControl();
+
+    // === MASS IMPORT & MOBILE ACCESS MODULE ===
+    async function refreshSidebarPlaylists() {
+        const container = document.getElementById('sidebar-playlists-list');
+        if (!container) return;
+        try {
+            const resp = await fetch('/playlists');
+            if (!resp.ok) return;
+            const playlists = await resp.json();
+            container.innerHTML = '';
+            playlists.forEach(pl => {
+                const row = document.createElement('div');
+                row.className = 'sidebar-playlist-item';
+                row.innerHTML = `
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🎵 ${pl.name}</span>
+                    <span style="font-size:11px;opacity:0.6;">${pl.track_count}</span>
+                `;
+                row.addEventListener('click', () => openPlaylistView(pl));
+                container.appendChild(row);
+            });
+        } catch (err) {
+            console.error('Ошибка загрузки плейлистов:', err);
+        }
+    }
+
+    async function openPlaylistView(pl) {
+        try {
+            const resp = await fetch(`/playlists/${pl.id}/tracks?limit=5000`);
+            if (!resp.ok) return;
+            const tracks = await resp.json();
+            if (typeof renderTracks === 'function') {
+                renderTracks(tracks);
+            }
+            const titleEl = document.querySelector('#section-title, .section-title, h1, h2');
+            if (titleEl) {
+                titleEl.textContent = `Плейлист: ${pl.name} (${tracks.length})`;
+            }
+        } catch (err) {
+            console.error('Не удалось открыть плейлист:', err);
+        }
+    }
+
+    function openImportModal() {
+        const existing = document.getElementById('ym-import-modal');
+        if (existing) existing.remove();
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ym-import-modal';
+        overlay.className = 'ym-modal-overlay';
+        overlay.innerHTML = `
+            <div class="ym-modal-card">
+                <div class="ym-modal-header">
+                    <h3>📥 Импорт своей музыки (1000+ треков)</h3>
+                    <button class="ym-modal-close" id="ym-import-close">&times;</button>
+                </div>
+
+                <label style="font-size:13px;color:#ccc;">Куда добавить импортируемые треки?</label>
+                <select id="ym-target-mode" class="ym-select">
+                    <option value="both">❤️ В «Мне нравится» + создать отдельный плейлист</option>
+                    <option value="favorites">❤️ Только в «Мне нравится» (Любимые)</option>
+                    <option value="playlist">🎵 Только в отдельный плейлист</option>
+                </select>
+
+                <div id="ym-playlist-name-wrap">
+                    <label style="font-size:13px;color:#ccc;">Название плейлиста:</label>
+                    <input type="text" id="ym-playlist-name" class="ym-input" value="Из Яндекс Музыки" placeholder="Например: Из Яндекс Музыки">
+                </div>
+
+                <hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;">
+
+                <label style="font-size:13px;color:#ccc;font-weight:600;">Способ 1. Мгновенный импорт папки на ПК (рекомендуется для 1000+ песен):</label>
+                <input type="text" id="ym-folder-path" class="ym-input" placeholder="/home/squ/Downloads/YandexMusic">
+                <button type="button" id="ym-btn-scan-folder" class="ym-btn-primary" style="margin-bottom:16px;">
+                    ⚡ Сканировать и импортировать папку
+                </button>
+
+                <label style="font-size:13px;color:#ccc;font-weight:600;">Способ 2. Выбрать файлы или папку через браузер (с телефона/ПК):</label>
+                <input type="file" id="ym-file-input" class="ym-input" multiple accept=".mp3,.flac,.m4a,.ogg,.opus,.wav,.aac">
+                <button type="button" id="ym-btn-upload-files" class="ym-btn-primary" style="background:#32d74b;color:#000;">
+                    📤 Загрузить выбранные файлы
+                </button>
+
+                <div id="ym-import-status" style="display:none;margin-top:14px;">
+                    <div class="ym-progress-bar"><div class="ym-progress-fill" id="ym-progress-fill"></div></div>
+                    <div id="ym-status-text" style="font-size:13px;color:#ddd;text-align:center;">Подготовка...</div>
+                </div>
+            </div>
+        `;
+
+        document.body.appendChild(overlay);
+
+        const modeSel = overlay.querySelector('#ym-target-mode');
+        const plWrap = overlay.querySelector('#ym-playlist-name-wrap');
+        modeSel.addEventListener('change', () => {
+            plWrap.style.display = modeSel.value === 'favorites' ? 'none' : 'block';
+        });
+
+        overlay.querySelector('#ym-import-close').onclick = () => overlay.remove();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+
+        const statusBox = overlay.querySelector('#ym-import-status');
+        const progressFill = overlay.querySelector('#ym-progress-fill');
+        const statusText = overlay.querySelector('#ym-status-text');
+
+        // Способ 1: локальная папка
+        overlay.querySelector('#ym-btn-scan-folder').addEventListener('click', async () => {
+            const folderPath = overlay.querySelector('#ym-folder-path').value.trim();
+            if (!folderPath) {
+                alert('Укажите путь к папке с музыкой (например: /home/squ/Downloads)');
+                return;
+            }
+            statusBox.style.display = 'block';
+            progressFill.style.width = '40%';
+            statusText.textContent = 'Сканируем аудиофайлы и читаем метаданные...';
+
+            try {
+                const resp = await fetch('/import/folder', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({
+                        folder_path: folderPath,
+                        target_mode: modeSel.value,
+                        playlist_name: overlay.querySelector('#ym-playlist-name').value.trim() || 'Из Яндекс Музыки'
+                    })
+                });
+                const data = await resp.json();
+                if (!resp.ok) throw new Error(data.detail || 'Ошибка импорта');
+                progressFill.style.width = '100%';
+                statusText.textContent = `✅ Готово! Импортировано треков: ${data.imported_count} (всего в папке: ${data.total_scanned}). Рекомендации «Моей волны» обновлены!`;
+                await refreshSidebarPlaylists();
+                if (data.playlist_id && modeSel.value !== 'favorites') {
+                    openPlaylistView({ id: data.playlist_id, name: data.playlist_name });
+                }
+            } catch (err) {
+                progressFill.style.width = '0%';
+                statusText.textContent = `❌ ${err.message}`;
+            }
+        });
+
+        // Способ 2: пакетная загрузка файлов пачками по 15 штук
+        overlay.querySelector('#ym-btn-upload-files').addEventListener('click', async () => {
+            const fileInput = overlay.querySelector('#ym-file-input');
+            const files = Array.from(fileInput.files || []);
+            if (!files.length) {
+                alert('Сначала выберите аудиофайлы!');
+                return;
+            }
+            statusBox.style.display = 'block';
+            const batchSize = 15;
+            let importedTotal = 0;
+            let lastPlaylist = null;
+            const plName = overlay.querySelector('#ym-playlist-name').value.trim() || 'Из Яндекс Музыки';
+
+            for (let i = 0; i < files.length; i += batchSize) {
+                const chunk = files.slice(i, i + batchSize);
+                const form = new FormData();
+                chunk.forEach(f => form.append('files', f));
+                form.append('target_mode', modeSel.value);
+                form.append('playlist_name', plName);
+
+                const pct = Math.round((i / files.length) * 100);
+                progressFill.style.width = `${pct}%`;
+                statusText.textContent = `Загрузка: ${i} из ${files.length} треков...`;
+
+                const resp = await fetch('/import/upload', { method: 'POST', body: form });
+                if (resp.ok) {
+                    const resData = await resp.json();
+                    importedTotal += resData.imported_count || 0;
+                    lastPlaylist = resData;
+                }
+            }
+
+            progressFill.style.width = '100%';
+            statusText.textContent = `✅ Загружено и добавлено треков: ${importedTotal} из ${files.length}!`;
+            await refreshSidebarPlaylists();
+            if (lastPlaylist && lastPlaylist.playlist_id && modeSel.value !== 'favorites') {
+                openPlaylistView({ id: lastPlaylist.playlist_id, name: lastPlaylist.playlist_name });
+            }
+        });
+    }
+
+    async function openMobileAccessModal() {
+        const existing = document.getElementById('ym-mobile-modal');
+        if (existing) existing.remove();
+
+        let info = { lan_url: window.location.origin, tunnel_url: null };
+        try {
+            const r = await fetch('/network-info');
+            if (r.ok) info = await r.json();
+        } catch {}
+
+        const targetUrl = info.tunnel_url || info.lan_url;
+        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(targetUrl)}`;
+
+        const overlay = document.createElement('div');
+        overlay.id = 'ym-mobile-modal';
+        overlay.className = 'ym-modal-overlay';
+        overlay.innerHTML = `
+            <div class="ym-modal-card" style="text-align:center;">
+                <div class="ym-modal-header">
+                    <h3>📱 Вход с телефона</h3>
+                    <button class="ym-modal-close" id="ym-mobile-close">&times;</button>
+                </div>
+                <p style="font-size:13px;color:#bbb;margin-top:0;">
+                    Отсканируйте QR-код камерой телефона или откройте ссылку в мобильном браузере:
+                </p>
+                <img src="${qrUrl}" alt="QR Code" style="width:180px;height:180px;border-radius:12px;background:#fff;padding:8px;margin:8px auto;display:block;">
+                <div style="margin:12px 0;text-align:left;">
+                    <label style="font-size:12px;color:#aaa;">🏠 Дома по Wi-Fi:</label>
+                    <input type="text" class="ym-input" readonly value="${info.lan_url}" onclick="this.select()">
+                    <label style="font-size:12px;color:#aaa;">🌍 Вне дома (интернет-туннель HTTPS):</label>
+                    <input type="text" class="ym-input" readonly value="${info.tunnel_url || 'Запустите ./start_remote.sh для внешней ссылки'}" onclick="this.select()">
+                </div>
+                <p style="font-size:12px;color:#888;">
+                    💡 Совет: на телефоне в меню браузера нажмите <b>«Добавить на главный экран»</b> — плеер установится как приложение и будет играть при заблокированном экране.
+                </p>
+            </div>
+        `;
+        document.body.appendChild(overlay);
+        overlay.querySelector('#ym-mobile-close').onclick = () => overlay.remove();
+        overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+    }
+
+    function mountSidebarExtensions() {
+        const sidebar = document.querySelector('.sidebar, aside, .left-sidebar, nav');
+        if (!sidebar || document.getElementById('ym-sidebar-extensions')) return;
+
+        const ext = document.createElement('div');
+        ext.id = 'ym-sidebar-extensions';
+        ext.className = 'sidebar-extra-section';
+        ext.innerHTML = `
+            <button type="button" class="sidebar-action-btn" id="btn-open-import">
+                <i class="fas fa-file-import"></i> <span>Импорт треков (1000+)</span>
+            </button>
+            <button type="button" class="sidebar-action-btn" id="btn-open-mobile" style="background:rgba(10,132,255,0.14);color:#5ac8fa;">
+                <i class="fas fa-mobile-alt"></i> <span>Вход с телефона</span>
+            </button>
+            <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.45);padding:8px 12px 4px;text-transform:uppercase;letter-spacing:0.06em;">
+                Мои плейлисты
+            </div>
+            <div id="sidebar-playlists-list"></div>
+        `;
+        sidebar.appendChild(ext);
+
+        ext.querySelector('#btn-open-import').addEventListener('click', openImportModal);
+        ext.querySelector('#btn-open-mobile').addEventListener('click', openMobileAccessModal);
+        refreshSidebarPlaylists();
+    }
+
+    mountSidebarExtensions();
+    setTimeout(mountSidebarExtensions, 600);
+
 });

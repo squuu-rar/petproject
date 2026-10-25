@@ -2148,3 +2148,264 @@ body.view-wave .lyrics-overlay {
     .lyrics-overlay { left: 0; top: 60px; }
     .artist-view-layer { padding: 20px 18px 56px; }
 }
+
+
+/* Ползунок громкости на карточке исполнителя */
+.artist-volume-control {
+    display: inline-flex;
+    align-items: center;
+    gap: 8px;
+    background: rgba(255, 255, 255, 0.06);
+    border: 1px solid rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    padding: 6px 14px 6px 10px;
+    margin-left: 4px;
+    backdrop-filter: blur(8px);
+    transition: background 0.2s ease, border-color 0.2s ease;
+}
+
+.artist-volume-control:hover {
+    background: rgba(255, 255, 255, 0.1);
+    border-color: rgba(255, 255, 255, 0.2);
+}
+
+.artist-vol-btn {
+    background: transparent;
+    border: none;
+    color: #e5e5e5;
+    cursor: pointer;
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    padding: 2px;
+    font-size: 15px;
+    line-height: 1;
+    transition: color 0.15s ease, transform 0.15s ease;
+}
+
+.artist-vol-btn:hover {
+    color: #ff453a;
+    transform: scale(1.08);
+}
+
+.artist-vol-slider {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 96px;
+    height: 4px;
+    border-radius: 999px;
+    background: rgba(255, 255, 255, 0.22);
+    outline: none;
+    cursor: pointer;
+}
+
+.artist-vol-slider::-webkit-slider-thumb {
+    -webkit-appearance: none;
+    appearance: none;
+    width: 12px;
+    height: 12px;
+    border-radius: 50%;
+    background: #ff453a;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(255, 69, 58, 0.6);
+    transition: transform 0.15s ease;
+}
+
+.artist-vol-slider::-webkit-slider-thumb:hover {
+    transform: scale(1.2);
+}
+
+.artist-vol-slider::-moz-range-thumb {
+    width: 12px;
+    height: 12px;
+    border: none;
+    border-radius: 50%;
+    background: #ff453a;
+    cursor: pointer;
+    box-shadow: 0 0 6px rgba(255, 69, 58, 0.6);
+}
+
+.artist-vol-pct {
+    font-size: 11px;
+    font-weight: 600;
+    color: rgba(255, 255, 255, 0.7);
+    min-width: 32px;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    user-select: none;
+}
+
+
+/* === МОДАЛЬНОЕ ОКНО ИМПОРТА И МОБИЛЬНОГО ДОСТУПА === */
+.ym-modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(0, 0, 0, 0.78);
+    backdrop-filter: blur(8px);
+    z-index: 9999;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+}
+
+.ym-modal-card {
+    background: #18181c;
+    border: 1px solid rgba(255, 255, 255, 0.12);
+    border-radius: 18px;
+    width: 100%;
+    max-width: 520px;
+    padding: 24px;
+    color: #fff;
+    box-shadow: 0 20px 50px rgba(0, 0, 0, 0.6);
+}
+
+.ym-modal-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 16px;
+}
+
+.ym-modal-header h3 {
+    margin: 0;
+    font-size: 20px;
+    font-weight: 700;
+}
+
+.ym-modal-close {
+    background: transparent;
+    border: none;
+    color: #aaa;
+    font-size: 22px;
+    cursor: pointer;
+}
+
+.ym-input, .ym-select {
+    width: 100%;
+    background: rgba(255, 255, 255, 0.07);
+    border: 1px solid rgba(255, 255, 255, 0.14);
+    border-radius: 10px;
+    padding: 11px 14px;
+    color: #fff;
+    font-size: 14px;
+    margin-top: 6px;
+    margin-bottom: 14px;
+    box-sizing: border-box;
+}
+
+.ym-btn-primary {
+    background: #ff453a;
+    color: #fff;
+    border: none;
+    border-radius: 999px;
+    padding: 11px 20px;
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    width: 100%;
+    transition: opacity 0.2s ease;
+}
+
+.ym-btn-primary:hover {
+    opacity: 0.9;
+}
+
+.ym-progress-bar {
+    width: 100%;
+    height: 8px;
+    background: rgba(255, 255, 255, 0.1);
+    border-radius: 999px;
+    overflow: hidden;
+    margin: 12px 0;
+}
+
+.ym-progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, #ff453a, #ff9f0a);
+    width: 0%;
+    transition: width 0.2s ease;
+}
+
+.sidebar-extra-section {
+    margin-top: 14px;
+    padding-top: 12px;
+    border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+.sidebar-action-btn {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    width: 100%;
+    padding: 9px 12px;
+    border-radius: 10px;
+    border: none;
+    background: rgba(255, 69, 58, 0.12);
+    color: #ff6961;
+    font-weight: 600;
+    font-size: 13px;
+    cursor: pointer;
+    margin-bottom: 6px;
+    text-align: left;
+    transition: background 0.15s ease;
+}
+
+.sidebar-action-btn:hover {
+    background: rgba(255, 69, 58, 0.22);
+}
+
+.sidebar-playlist-item {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    padding: 7px 12px;
+    border-radius: 8px;
+    color: rgba(255, 255, 255, 0.78);
+    font-size: 13px;
+    cursor: pointer;
+    transition: background 0.15s ease, color 0.15s ease;
+}
+
+.sidebar-playlist-item:hover {
+    background: rgba(255, 255, 255, 0.07);
+    color: #fff;
+}
+
+/* === МОБИЛЬНАЯ АДАПТАЦИЯ ДЛЯ СМАРТФОНА === */
+@media (max-width: 768px) {
+    body {
+        padding-bottom: 140px !important;
+    }
+    .sidebar, aside, .left-sidebar {
+        position: fixed !important;
+        bottom: 72px !important;
+        left: 0 !important;
+        right: 0 !important;
+        top: auto !important;
+        width: 100% !important;
+        height: 56px !important;
+        z-index: 950 !important;
+        display: flex !important;
+        flex-direction: row !important;
+        align-items: center !important;
+        justify-content: space-around !important;
+        padding: 0 8px !important;
+        background: rgba(18, 18, 22, 0.96) !important;
+        backdrop-filter: blur(14px) !important;
+        border-top: 1px solid rgba(255, 255, 255, 0.1) !important;
+        overflow-x: auto !important;
+    }
+    .sidebar-extra-section {
+        margin-top: 0 !important;
+        padding-top: 0 !important;
+        border-top: none !important;
+        display: flex !important;
+        gap: 6px !important;
+    }
+    .main-content, main {
+        margin-left: 0 !important;
+        width: 100% !important;
+        padding: 12px !important;
+    }
+}

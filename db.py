@@ -264,7 +264,7 @@ def get_playlists() -> list:
     try:
         cursor = conn.cursor()
         cursor.execute("""
-            SELECT p.id, p.name, COUNT(pt.id) as track_count
+            SELECT p.id, p.name, COUNT(pt.track_id) as track_count
             FROM playlists p
             LEFT JOIN playlist_tracks pt ON p.id = pt.playlist_id
             GROUP BY p.id, p.name
@@ -277,5 +277,202 @@ def get_playlists() -> list:
              "track_count": row["track_count"] if isinstance(row, dict) else row[2]}
             for row in rows
         ]
+    finally:
+        conn.close()
+
+
+def get_or_create_playlist(name: str) -> dict:
+    clean_name = (name or "Мой плейлист").strip()
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        row = cur.execute("SELECT id, name FROM playlists WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
+        if row:
+            pid = row["id"] if isinstance(row, sqlite3.Row) else row[0]
+            pname = row["name"] if isinstance(row, sqlite3.Row) else row[1]
+            cnt_row = cur.execute("SELECT COUNT(track_id) FROM playlist_tracks WHERE playlist_id = ?", (pid,)).fetchone()
+            cnt = cnt_row[0] if cnt_row else 0
+            return {"id": pid, "name": pname, "track_count": cnt}
+        cur.execute("INSERT INTO playlists (name) VALUES (?)", (clean_name,))
+        pid = cur.lastrowid
+        conn.commit()
+        return {"id": pid, "name": clean_name, "track_count": 0}
+    finally:
+        conn.close()
+
+
+def add_tracks_to_playlist(playlist_id: int, track_ids: List[int]) -> int:
+    if not track_ids:
+        return 0
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        max_pos_row = cur.execute(
+            "SELECT COALESCE(MAX(position), 0) FROM playlist_tracks WHERE playlist_id = ?",
+            (playlist_id,)
+        ).fetchone()
+        pos = int(max_pos_row[0]) if max_pos_row else 0
+        added = 0
+        for tid in track_ids:
+            pos += 1
+            cur.execute(
+                "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+                (playlist_id, tid, pos)
+            )
+            added += cur.rowcount
+        conn.commit()
+        return added
+    finally:
+        conn.close()
+
+
+def get_playlist_tracks(playlist_id: int, limit: int = 5000, offset: int = 0) -> List[Dict[str, Any]]:
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT t.*
+            FROM playlist_tracks pt
+            JOIN tracks t ON pt.track_id = t.id
+            WHERE pt.playlist_id = ?
+            ORDER BY pt.position ASC, pt.rowid ASC
+            LIMIT ? OFFSET ?
+        """, (playlist_id, limit, offset)).fetchall()
+        out = []
+        for r in rows:
+            d = dict(r)
+            d["liked"] = bool(d.get("liked", 0))
+            out.append(d)
+        return out
+    finally:
+        conn.close()
+
+
+def bulk_import_tracks(
+    tracks_data: List[Dict[str, Any]],
+    target_mode: str = "both",
+    playlist_name: Optional[str] = "Импорт из Яндекс Музыки"
+) -> Dict[str, Any]:
+    """Пакетно сохраняет 1000+ треков за одну транзакцию и привязывает к Любимым и/или плейлисту."""
+    init_playlists_tables()
+    mark_liked = 1 if target_mode in ("favorites", "both") else 0
+    use_playlist = target_mode in ("playlist", "both")
+
+    playlist_info = None
+    if use_playlist:
+        playlist_info = get_or_create_playlist(playlist_name or "Импорт из Яндекс Музыки")
+
+    conn = get_db()
+    track_ids: List[int] = []
+    imported_count = 0
+    try:
+        cur = conn.cursor()
+        for item in tracks_data:
+            path = item.get("path")
+            if not path:
+                continue
+            existing = cur.execute("SELECT id, liked FROM tracks WHERE path = ?", (path,)).fetchone()
+            if existing:
+                tid = existing["id"]
+                new_liked = 1 if (existing["liked"] or mark_liked) else 0
+                cur.execute("""
+                    UPDATE tracks
+                    SET title = COALESCE(?, title),
+                        artist = COALESCE(?, artist),
+                        album = COALESCE(?, album),
+                        duration = COALESCE(?, duration),
+                        cover_path = COALESCE(?, cover_path),
+                        liked = ?
+                    WHERE id = ?
+                """, (
+                    item.get("title"), item.get("artist"), item.get("album"),
+                    item.get("duration"), item.get("cover_path"), new_liked, tid
+                ))
+            else:
+                cur.execute("""
+                    INSERT INTO tracks (
+                        path, title, artist, album, genre, year,
+                        track_number, duration, cover_path, source,
+                        external_id, cache_path, liked, last_accessed
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'local', NULL, NULL, ?, ?)
+                """, (
+                    path,
+                    item.get("title") or "Без названия",
+                    item.get("artist") or "Неизвестный исполнитель",
+                    item.get("album") or "-",
+                    item.get("genre"),
+                    item.get("year"),
+                    item.get("track_number"),
+                    item.get("duration"),
+                    item.get("cover_path"),
+                    mark_liked,
+                    time.time()
+                ))
+                tid = cur.lastrowid
+                imported_count += 1
+            track_ids.append(int(tid))
+
+        if use_playlist and playlist_info and track_ids:
+            pid = playlist_info["id"]
+            max_pos_row = cur.execute(
+                "SELECT COALESCE(MAX(position), 0) FROM playlist_tracks WHERE playlist_id = ?",
+                (pid,)
+            ).fetchone()
+            pos = int(max_pos_row[0]) if max_pos_row else 0
+            for tid in track_ids:
+                pos += 1
+                cur.execute(
+                    "INSERT OR IGNORE INTO playlist_tracks (playlist_id, track_id, position) VALUES (?, ?, ?)",
+                    (pid, tid, pos)
+                )
+
+        conn.commit()
+    finally:
+        conn.close()
+
+    return {
+        "status": "ok",
+        "imported_count": len(track_ids),
+        "new_inserted": imported_count,
+        "total_scanned": len(tracks_data),
+        "target_mode": target_mode,
+        "playlist_id": playlist_info["id"] if playlist_info else None,
+        "playlist_name": playlist_info["name"] if playlist_info else None,
+    }
+
+
+def get_taste_profile_artists(limit: int = 30) -> List[str]:
+    """Возвращает топ любимых артистов с учётом:
+    1) Треков в 'Мне нравится' (liked = 1)
+    2) Всех треков в пользовательских плейлистах (включая импортированные 1000+ треков)
+    3) Истории прослушиваний (play / finish)
+    """
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT artist, SUM(weight) as score
+            FROM (
+                SELECT artist, 3.0 as weight FROM tracks WHERE liked = 1 AND artist IS NOT NULL
+                UNION ALL
+                SELECT t.artist, 2.5 as weight
+                FROM playlist_tracks pt
+                JOIN tracks t ON pt.track_id = t.id
+                WHERE t.artist IS NOT NULL
+                UNION ALL
+                SELECT t.artist, 2.0 as weight
+                FROM history h
+                JOIN tracks t ON h.track_id = t.id
+                WHERE h.event IN ('play', 'finish') AND t.artist IS NOT NULL
+            )
+            WHERE TRIM(artist) != ''
+              AND LOWER(TRIM(artist)) NOT IN ('неизвестный исполнитель', 'unknown artist', 'unknown', '-')
+            GROUP BY LOWER(TRIM(artist))
+            ORDER BY score DESC
+            LIMIT ?
+        """, (limit,)).fetchall()
+        return [r["artist"] for r in rows if r["artist"]]
     finally:
         conn.close()

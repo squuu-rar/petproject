@@ -83,3 +83,22 @@ class PlaylistRead(BaseModel):
     id: int
     name: str
     track_count: int = 0
+
+
+class ImportFolderRequest(BaseModel):
+    folder_path: str
+    target_mode: Literal["favorites", "playlist", "both"] = "both"
+    playlist_name: Optional[str] = "Импорт из Яндекс Музыки"
+
+
+class ImportResult(BaseModel):
+    status: str = "ok"
+    imported_count: int
+    total_scanned: int
+    target_mode: str
+    playlist_id: Optional[int] = None
+    playlist_name: Optional[str] = None
+
+
+class PlaylistAddTracksRequest(BaseModel):
+    track_ids: List[int]
