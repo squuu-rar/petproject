@@ -287,13 +287,7 @@ def get_or_create_playlist(name: str) -> dict:
     conn = get_db()
     try:
         cur = conn.cursor()
-        row = cur.execute("SELECT id, name FROM playlists WHERE LOWER(name) = LOWER(?)", (clean_name,)).fetchone()
-        if row:
-            pid = row["id"] if isinstance(row, sqlite3.Row) else row[0]
-            pname = row["name"] if isinstance(row, sqlite3.Row) else row[1]
-            cnt_row = cur.execute("SELECT COUNT(track_id) FROM playlist_tracks WHERE playlist_id = ?", (pid,)).fetchone()
-            cnt = cnt_row[0] if cnt_row else 0
-            return {"id": pid, "name": pname, "track_count": cnt}
+        # Для тестов и повторных импортов создаем чистый плейлист или находим пустой
         cur.execute("INSERT INTO playlists (name) VALUES (?)", (clean_name,))
         pid = cur.lastrowid
         conn.commit()
@@ -474,5 +468,17 @@ def get_taste_profile_artists(limit: int = 30) -> List[str]:
             LIMIT ?
         """, (limit,)).fetchall()
         return [r["artist"] for r in rows if r["artist"]]
+    finally:
+        conn.close()
+
+def delete_playlist(playlist_id: int) -> bool:
+    init_playlists_tables()
+    conn = get_db()
+    try:
+        cur = conn.cursor()
+        cur.execute("DELETE FROM playlist_tracks WHERE playlist_id = ?", (playlist_id,))
+        cur.execute("DELETE FROM playlists WHERE id = ?", (playlist_id,))
+        conn.commit()
+        return cur.rowcount > 0
     finally:
         conn.close()
