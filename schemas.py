@@ -46,7 +46,7 @@ class ArtistRead(BaseModel):
 
 class HistoryCreate(BaseModel):
     track_id: int
-    event: Literal["play", "skip", "finish"]
+    event: Literal["play", "skip", "finish", "like"]
     elapsed_seconds: float = 0.0
 
 
@@ -79,25 +79,35 @@ class PrefetchRequest(BaseModel):
 class PlaylistCreate(BaseModel):
     name: str
 
+
+class PlaylistRename(BaseModel):
+    name: str
+
+
 class PlaylistRead(BaseModel):
     id: int
     name: str
     track_count: int = 0
+    cover_path: Optional[str] = None
 
 
 class ImportFolderRequest(BaseModel):
     folder_path: str
-    target_mode: Literal["favorites", "playlist", "both"] = "both"
+    target_mode: Literal["favorites", "playlist", "both", "library"] = "both"
     playlist_name: Optional[str] = "Импорт из Яндекс Музыки"
+    playlist_id: Optional[int] = None
 
 
 class ImportResult(BaseModel):
     status: str = "ok"
     imported_count: int
+    new_inserted: int = 0
+    updated_existing: int = 0
     total_scanned: int
     target_mode: str
     playlist_id: Optional[int] = None
     playlist_name: Optional[str] = None
+    taste_artists_count: int = 0
 
 
 class PlaylistAddTracksRequest(BaseModel):

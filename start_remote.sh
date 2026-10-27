@@ -2,19 +2,52 @@
 cd "$(dirname "$0")"
 rm -f .tunnel_url
 
-if command -v cloudflared >/dev/null 2>&1; then
-    echo "🌐 Запускаем внешний HTTPS-туннель для доступа с телефона вне дома..."
-    cloudflared tunnel --url http://127.0.0.1:8001 --no-autoupdate > /tmp/petproject_tunnel.log 2>&1 &
-    TUNNEL_PID=$!
-    trap "kill $TUNNEL_PID 2>/dev/null; rm -f .tunnel_url" EXIT
+if [ -f .env ]; then
+    set -a
+    source .env
+    set +a
+fi
 
-    for i in {1..15}; do
-        URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" /tmp/petproject_tunnel.log | head -n 1)
+PORT="${PORT:-8001}"
+TUNNEL_LOG="/tmp/petproject_tunnel.log"
+rm -f "$TUNNEL_LOG"
+
+cleanup() {
+    if [ -n "${TUNNEL_SUPERVISOR_PID:-}" ]; then
+        kill "$TUNNEL_SUPERVISOR_PID" 2>/dev/null || true
+    fi
+    pkill -P $$ 2>/dev/null || true
+    rm -f .tunnel_url
+}
+trap cleanup EXIT INT TERM
+
+if command -v tailscale >/dev/null 2>&1; then
+    TS_IP=$(tailscale ip -4 2>/dev/null | head -n 1 || true)
+    if [ -n "$TS_IP" ]; then
+        echo "🔒 Tailscale активен! Постоянная ссылка для телефона: http://${TS_IP}:${PORT}"
+    fi
+fi
+
+if command -v cloudflared >/dev/null 2>&1; then
+    echo "🌐 Запускаем внешний HTTPS-туннель для доступа с телефона вне дома (с автоперезапуском)..."
+    (
+        while true; do
+            cloudflared tunnel --url "http://127.0.0.1:${PORT}" --no-autoupdate >> "$TUNNEL_LOG" 2>&1 || true
+            sleep 3
+        done
+    ) &
+    TUNNEL_SUPERVISOR_PID=$!
+
+    for i in {1..20}; do
+        URL=$(grep -oE "https://[a-zA-Z0-9-]+\.trycloudflare\.com" "$TUNNEL_LOG" 2>/dev/null | tail -n 1 || true)
         if [ -n "$URL" ]; then
             echo "$URL" > .tunnel_url
-            echo "================================================================"
+            echo "======================================================="
             echo "📱 ССЫЛКА ДЛЯ ТЕЛЕФОНА ВНЕ ДОМА: $URL"
-            echo "================================================================"
+            echo "======================================================="
+            if command -v qrencode >/dev/null 2>&1; then
+                qrencode -t ansiutf8 "$URL" || true
+            fi
             break
         fi
         sleep 1

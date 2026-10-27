@@ -1,43 +1,69 @@
-import socket
-import shutil
-from fastapi import UploadFile, File, Form, Request
-from db import (
-    bulk_import_tracks,
-    get_playlist_tracks,
-    add_tracks_to_playlist,
-    get_or_create_playlist,
-)
-from schemas import ImportFolderRequest, ImportResult, PlaylistAddTracksRequest
-from importer import scan_directory_for_audio, extract_audio_metadata, UPLOADS_DIR, AUDIO_EXTENSIONS
 import asyncio
+import hashlib
 import json
+import mimetypes
+import os
 import re
+import shutil
+import socket
+import subprocess
 import time
 import urllib.parse
 import urllib.request
 from concurrent.futures import ThreadPoolExecutor
 from contextlib import asynccontextmanager
 from functools import lru_cache
-from fastapi import FastAPI, Query, Depends, HTTPException
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import FileResponse, RedirectResponse
 from pathlib import Path
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, Iterator, List, Literal, Optional
+
+from fastapi import Depends, FastAPI, File, Form, HTTPException, Query, Request, Response, UploadFile
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import FileResponse, JSONResponse, RedirectResponse, StreamingResponse
+from fastapi.staticfiles import StaticFiles
 from ytmusicapi import YTMusic
 
+from cache_manager import MEDIA_TYPES, CacheManager
 from db import (
+    add_tracks_to_playlist,
+    bulk_import_tracks,
     create_playlist,
+    delete_playlist,
+    get_all_tracks_with_play_counts,
+    get_db,
+    get_or_create_playlist,
+    get_playback_history,
+    get_playlist_by_id,
+    get_playlist_tracks,
     get_playlists,
-    init_db, get_track_by_id, get_tracks_paginated, get_playback_history,
-    get_db, save_remote_track, get_all_tracks_with_play_counts
+    get_taste_profile_artists,
+    get_track_by_id,
+    get_tracks_paginated,
+    init_db,
+    init_playlists_tables,
+    remove_track_from_playlist,
+    rename_playlist,
+    save_remote_track,
 )
-from schemas import TrackRead, PlaylistCreate, PlaylistRead, PrefetchRequest, ArtistRead, AlbumRead, HistoryCreate, HistoryItemRead
-from search_service import SearchOrchestrator, LocalSearchService, RemoteSearchService
-from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
-from cache_manager import CacheManager
-from lastfm_service import get_remote_artist_avatar, LastFMService
+from importer import AUDIO_EXTENSIONS, UPLOADS_DIR, extract_audio_metadata, scan_directory_for_audio
+from lastfm_service import LastFMService, get_remote_artist_avatar
 from lyrics import fetch_lyrics
 from providers import YoutubeStreamProvider
+from schemas import (
+    AlbumRead,
+    ArtistRead,
+    HistoryCreate,
+    HistoryItemRead,
+    ImportFolderRequest,
+    ImportResult,
+    PlaylistAddTracksRequest,
+    PlaylistCreate,
+    PlaylistRead,
+    PlaylistRename,
+    PrefetchRequest,
+    TrackRead,
+)
+from search_service import LocalSearchService, RemoteSearchService, SearchOrchestrator
+from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
 from wave_engine import WaveEngine
 
 BASE_DIR = Path(__file__).resolve().parent
@@ -54,6 +80,7 @@ _ytmusic_client: Optional[YTMusic] = None
 _ARTIST_CACHE: Dict[str, tuple[float, Dict[str, Any]]] = {}
 _SIM_AVATAR_CACHE: Dict[str, str] = {}
 ARTIST_CACHE_TTL = 600.0
+_tunnel_proc: Optional[subprocess.Popen] = None
 
 
 def _upscale_thumb(url: Optional[str]) -> Optional[str]:
@@ -125,7 +152,6 @@ def _resolve_artist_photo_fast(artist_name: str) -> Optional[str]:
                     if url:
                         _SIM_AVATAR_CACHE[key] = url
                         return url
-            # Фолбэк на обложку топового трека этого артиста в YTMusic
             songs = ytm.search(clean, filter="songs", limit=2) or []
             for s in songs:
                 thumbs = s.get("thumbnails") or []
@@ -137,7 +163,6 @@ def _resolve_artist_photo_fast(artist_name: str) -> Optional[str]:
         except Exception:
             pass
 
-    # Фолбэк на iTunes Search API
     try:
         it_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(clean)}&entity=song&limit=1"
         req = urllib.request.Request(it_url, headers={"User-Agent": "MusicStreamApp/2.0"})
@@ -160,7 +185,7 @@ def get_search_orchestrator() -> SearchOrchestrator:
     return SearchOrchestrator(
         LocalSearchService(),
         RemoteSearchService(YTMusic()),
-        SoundCloudSearchService()
+        SoundCloudSearchService(),
     )
 
 
@@ -168,6 +193,7 @@ def get_search_orchestrator() -> SearchOrchestrator:
 async def lifespan(app: FastAPI):
     global cache_manager, wave_engine
     init_db()
+    init_playlists_tables()
     cache_manager = CacheManager(CACHE_DIR, 500 * 1024 * 1024)
     wave_engine = WaveEngine()
     yield
@@ -175,10 +201,36 @@ async def lifespan(app: FastAPI):
 
 app = FastAPI(title="Music Player API", lifespan=lifespan)
 
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+    expose_headers=["Content-Range", "Accept-Ranges", "Content-Length"],
+)
+
 
 @app.get("/")
 def serve_index():
-    return FileResponse(STATIC_DIR / "index.html")
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+
+
+@app.get("/manifest.json")
+def serve_manifest():
+    return FileResponse(STATIC_DIR / "manifest.json", media_type="application/manifest+json")
+
+
+@app.get("/sw.js")
+def serve_sw():
+    sw_path = STATIC_DIR / "sw.js"
+    if sw_path.exists():
+        return FileResponse(
+            sw_path,
+            media_type="application/javascript",
+            headers={"Service-Worker-Allowed": "/", "Cache-Control": "no-cache"},
+        )
+    return Response("self.addEventListener('fetch', () => {});", media_type="application/javascript")
 
 
 app.mount("/static", StaticFiles(directory=str(STATIC_DIR)), name="static")
@@ -232,7 +284,6 @@ def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
             if thumbs:
                 out["avatar"] = _upscale_thumb(thumbs[-1].get("url"))
 
-            # 1. Выгружаем ВСЕ песни из официального плейлиста артиста (до 200 треков)
             songs_sec = info.get("songs") or {}
             songs_browse_id = songs_sec.get("browseId")
             raw_song_items = list(songs_sec.get("results") or [])
@@ -277,7 +328,6 @@ def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
                     "last_accessed": None,
                 })
 
-            # 2. Официальные альбомы и синглы СТРОГО из профиля этого артиста (без общего поиска по названию альбома!)
             for sec_key in ("albums", "singles"):
                 sec = info.get(sec_key) or {}
                 for alb in (sec.get("results") or []):
@@ -297,7 +347,6 @@ def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
                         "tracks": [],
                     })
 
-            # 3. Официальные похожие исполнители из профиля YTMusic
             rel_sec = info.get("related") or {}
             for rel in (rel_sec.get("results") or []):
                 r_name = (rel.get("title") or "").strip()
@@ -314,7 +363,6 @@ def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
         except Exception:
             pass
 
-    # Дополнительно ищем альбомы через фильтр albums, но проверяем, чтобы АВТОР альбома совпадал с артистом
     try:
         alb_res = ytm.search(clean_name, filter="albums", limit=20) or []
         seen_alb_titles = {a["title"].lower() for a in out["albums"]}
@@ -341,7 +389,6 @@ def _fetch_ytm_catalog(clean_name: str) -> Dict[str, Any]:
     except Exception:
         pass
 
-    # Дополнительно запрашиваем треки через фильтр songs (строго проверяя совпадение поля artist!)
     try:
         song_res = ytm.search(clean_name, filter="songs", limit=60) or []
         for r in song_res:
@@ -389,7 +436,7 @@ def _fetch_lastfm_similar(clean_name: str) -> List[Dict[str, Optional[str]]]:
             "method": "artist.getsimilar",
             "artist": clean_name,
             "limit": 10,
-            "autocorrect": 1
+            "autocorrect": 1,
         }, timeout=4.0)
         sim_list = data.get("similarartists", {}).get("artist", [])
         if isinstance(sim_list, dict):
@@ -409,7 +456,6 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
     clean_name = name.strip()
     target_lower = clean_name.lower()
 
-    # 1. Все локальные и сохранённые в БД треки этого артиста (строгая проверка совпадения автора)
     all_tracks = get_all_tracks_with_play_counts()
     local_artist_tracks = [
         t for t in all_tracks
@@ -454,17 +500,14 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
     ytm_data = online_bundle.get("ytm_data") or {}
     ytm_songs = ytm_data.get("artist_songs") or []
 
-    # Фильтруем общую выдачу SearchOrchestrator строго по автору
     remote_tracks = []
     for r in online_bundle.get("search_res", []):
         if _artist_matches(r.get("artist") or "", clean_name):
             remote_tracks.append(r)
 
-    # Привязываем существующие ID и лайки из БД к онлайн-трекам
     db_by_ext = {t["external_id"]: t for t in all_tracks if t.get("external_id")}
     db_by_title = {(t.get("title") or "").strip().lower(): t for t in local_artist_tracks if t.get("title")}
 
-    # Вычисляем аватар артиста заранее, чтобы использовать его как фолбэк для треков без обложек
     fallback_local_cov = next((t["cover_path"] for t in local_artist_tracks if t.get("cover_path")), None)
     artist_avatar = _upscale_thumb(
         ytm_data.get("avatar")
@@ -482,7 +525,6 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
 
         if not title_norm:
             continue
-        # Дедупликация по external_id и по нормализованному названию песни внутри одного источника
         dedupe_key = ext or f"{title_norm}|{source_val}"
         if dedupe_key in seen_keys or (source_val != "soundcloud" and title_norm in seen_keys):
             continue
@@ -518,7 +560,6 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
     if not merged_tracks:
         raise HTTPException(status_code=404, detail="Artist not found or has no tracks")
 
-    # 3. Собираем альбомы ТОЛЬКО этого исполнителя
     albums_by_key: Dict[str, Dict[str, Any]] = {}
 
     for y_alb in (ytm_data.get("albums") or []):
@@ -559,7 +600,6 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
         if not alb_entry.get("year") and t.get("year"):
             alb_entry["year"] = t["year"]
 
-    # Проставляем обложку альбома тем трекам, у которых своей обложки не было
     for t in merged_tracks:
         alb_k = (t.get("album") or "").strip().lower()
         if alb_k in albums_by_key and albums_by_key[alb_k].get("cover_path"):
@@ -569,7 +609,6 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
     albums_list = list(albums_by_key.values())
     albums_list.sort(key=lambda a: (1 if a.get("browse_id") else 0, a.get("year") or 0, a.get("track_count") or 0), reverse=True)
 
-    # 4. Похожие исполнители + параллельная подгрузка недостающих аватарок
     similar_seen = {target_lower}
     similar_list: List[Dict[str, Optional[str]]] = []
 
@@ -608,12 +647,11 @@ def get_artist(name: str, orchestrator: SearchOrchestrator = Depends(get_search_
             except Exception:
                 pass
 
-    # Подгружаем аватарки тем похожим артистам, у которых avatar == None (например, пришедшим из Last.fm)
-    missing_Indices = [i for i, s in enumerate(similar_list) if not s.get("avatar")]
-    if missing_Indices:
+    missing_indices = [i for i, s in enumerate(similar_list) if not s.get("avatar")]
+    if missing_indices:
         av_pool = ThreadPoolExecutor(max_workers=4)
         try:
-            futs = {i: av_pool.submit(_resolve_artist_photo_fast, similar_list[i]["name"]) for i in missing_Indices}
+            futs = {i: av_pool.submit(_resolve_artist_photo_fast, similar_list[i]["name"]) for i in missing_indices}
             for i, fut in futs.items():
                 try:
                     resolved_url = fut.result(timeout=3.5)
@@ -641,7 +679,7 @@ def get_album_tracks(
     artist: str = Query(...),
     album: str = Query(...),
     browse_id: Optional[str] = Query(None),
-    orchestrator: SearchOrchestrator = Depends(get_search_orchestrator)
+    orchestrator: SearchOrchestrator = Depends(get_search_orchestrator),
 ):
     clean_artist = artist.strip()
     clean_album = album.strip()
@@ -733,29 +771,31 @@ def get_album_tracks(
 
 @app.get("/tracks", response_model=list[TrackRead])
 def list_tracks(
-    limit: int = Query(100, ge=1, le=5000),
+    limit: int = Query(500, ge=1, le=10000),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
-    order: str = Query("asc", pattern="^(asc|desc)$"),
-    source: Optional[str] = Query(None, pattern="^(local|remote|soundcloud)$")
+    order: Literal["asc", "desc"] = Query("asc"),
+    source: Optional[Literal["local", "remote", "soundcloud"]] = Query(None),
+    search: Optional[str] = Query(None),
 ):
-    return get_tracks_paginated(limit, offset, sort_by, order, source=source)
+    return get_tracks_paginated(limit, offset, sort_by, order, source=source, search=search)
 
 
 @app.get("/favorites", response_model=list[TrackRead])
 def list_favorites(
-    limit: int = Query(100, ge=1, le=5000),
+    limit: int = Query(5000, ge=1, le=10000),
     offset: int = Query(0, ge=0),
     sort_by: str = Query("id"),
-    order: str = Query("asc", pattern="^(asc|desc)$")
+    order: Literal["asc", "desc"] = Query("asc"),
+    search: Optional[str] = Query(None),
 ):
-    return get_tracks_paginated(limit, offset, sort_by, order, liked=True)
+    return get_tracks_paginated(limit, offset, sort_by, order, liked=True, search=search)
 
 
 @app.get("/search", response_model=list[TrackRead])
 def search_tracks(
     q: str = Query(..., min_length=1),
-    orchestrator: SearchOrchestrator = Depends(get_search_orchestrator)
+    orchestrator: SearchOrchestrator = Depends(get_search_orchestrator),
 ):
     return orchestrator.search(q)
 
@@ -766,6 +806,27 @@ async def get_wave_recommendations(limit: int = Query(20, ge=1, le=50)):
     if not wave_engine:
         wave_engine = WaveEngine()
     return await wave_engine.generate_wave(limit=limit)
+
+
+@app.get("/taste-profile")
+def api_get_taste_profile():
+    conn = get_db()
+    try:
+        total = conn.execute("SELECT COUNT(*) FROM tracks").fetchone()[0]
+        liked = conn.execute("SELECT COUNT(*) FROM tracks WHERE liked = 1").fetchone()[0]
+        local = conn.execute("SELECT COUNT(*) FROM tracks WHERE source = 'local'").fetchone()[0]
+        playlists_cnt = conn.execute("SELECT COUNT(*) FROM playlists").fetchone()[0]
+    finally:
+        conn.close()
+    top_artists = get_taste_profile_artists(limit=40)
+    return {
+        "total_tracks": total,
+        "liked_tracks": liked,
+        "local_tracks": local,
+        "playlists_count": playlists_cnt,
+        "taste_artists_count": len(top_artists),
+        "taste_artists": top_artists,
+    }
 
 
 @app.post("/tracks/remote", response_model=TrackRead)
@@ -784,8 +845,70 @@ def register_remote_track(track: TrackRead):
     return saved
 
 
+def _iter_file_range(file_path: Path, start: int, end: int, chunk_size: int = 64 * 1024) -> Iterator[bytes]:
+    with open(file_path, "rb") as fp:
+        fp.seek(start)
+        remaining = end - start + 1
+        while remaining > 0:
+            data = fp.read(min(chunk_size, remaining))
+            if not data:
+                break
+            remaining -= len(data)
+            yield data
+
+
+def _serve_audio_with_range(file_path: Path, request: Request, media_type: Optional[str] = None) -> Response:
+    file_size = file_path.stat().st_size
+    mtype = media_type or MEDIA_TYPES.get(file_path.suffix.lower()) or mimetypes.guess_type(str(file_path))[0] or "audio/mpeg"
+    common_headers = {
+        "Accept-Ranges": "bytes",
+        "Cache-Control": "public, max-age=3600",
+    }
+
+    range_header = request.headers.get("range") or request.headers.get("Range")
+    if not range_header or not range_header.strip().lower().startswith("bytes=") or file_size == 0:
+        return FileResponse(
+            file_path,
+            media_type=mtype,
+            headers={**common_headers, "Content-Length": str(file_size)},
+        )
+
+    try:
+        range_spec = range_header.strip().split("=", 1)[1].split(",")[0].strip()
+        start_s, end_s = range_spec.split("-", 1)
+        if start_s == "":
+            suffix = int(end_s)
+            start = max(0, file_size - suffix)
+            end = file_size - 1
+        else:
+            start = int(start_s)
+            end = int(end_s) if end_s else (file_size - 1)
+    except Exception:
+        return FileResponse(file_path, media_type=mtype, headers=common_headers)
+
+    if start < 0 or start >= file_size or end < start:
+        return Response(
+            status_code=416,
+            headers={"Content-Range": f"bytes */{file_size}", **common_headers},
+        )
+
+    end = min(end, file_size - 1)
+    length = end - start + 1
+    headers = {
+        **common_headers,
+        "Content-Range": f"bytes {start}-{end}/{file_size}",
+        "Content-Length": str(length),
+    }
+    return StreamingResponse(
+        _iter_file_range(file_path, start, end),
+        status_code=206,
+        media_type=mtype,
+        headers=headers,
+    )
+
+
 @app.get("/stream/{track_id}")
-async def stream_track(track_id: int):
+async def stream_track(track_id: int, request: Request):
     track = get_track_by_id(track_id)
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
@@ -795,7 +918,7 @@ async def stream_track(track_id: int):
         file_path = Path(track["path"])
         if not file_path.exists():
             raise HTTPException(status_code=404, detail="Audio file not found on disk")
-        return FileResponse(file_path)
+        return _serve_audio_with_range(file_path, request)
 
     if source in ("remote", "soundcloud"):
         ext_id = track.get("external_id")
@@ -817,7 +940,7 @@ async def stream_track(track_id: int):
             cached = await cache_manager.ensure_cached(track_id, timeout=STREAM_WAIT_S)
         if cached is None:
             raise HTTPException(status_code=502, detail="Не удалось получить аудио: источник недоступен")
-        return FileResponse(cached, media_type=CacheManager.media_type(cached))
+        return _serve_audio_with_range(cached, request, media_type=CacheManager.media_type(cached))
 
     raise HTTPException(status_code=400, detail="Unsupported source")
 
@@ -826,11 +949,20 @@ async def stream_track(track_id: int):
 def toggle_like(track_id: int, liked: bool = Query(...)):
     conn = get_db()
     try:
-        cur = conn.execute("UPDATE tracks SET liked = ? WHERE id = ?", (1 if liked else 0, track_id))
-        conn.commit()
+        now = time.time()
+        cur = conn.execute(
+            "UPDATE tracks SET liked = ?, last_accessed = ? WHERE id = ?",
+            (1 if liked else 0, now, track_id),
+        )
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Track not found")
-        return {"status": "ok"}
+        if liked:
+            conn.execute(
+                "INSERT INTO history (track_id, event, elapsed_seconds, timestamp) VALUES (?, 'like', 0.0, ?)",
+                (track_id, now),
+            )
+        conn.commit()
+        return {"status": "ok", "liked": liked}
     finally:
         conn.close()
 
@@ -853,7 +985,7 @@ def record_history(payload: HistoryCreate):
     try:
         conn.execute(
             "INSERT INTO history (track_id, event, elapsed_seconds, timestamp) VALUES (?, ?, ?, ?)",
-            (payload.track_id, payload.event, payload.elapsed_seconds, time.time())
+            (payload.track_id, payload.event, payload.elapsed_seconds, time.time()),
         )
         conn.commit()
         return {"status": "ok"}
@@ -896,13 +1028,35 @@ async def prefetch_tracks(payload: PrefetchRequest):
 def api_create_playlist(payload: PlaylistCreate):
     name = (payload.name or "").strip()
     if not name:
-        from fastapi import HTTPException
         raise HTTPException(status_code=400, detail="Playlist name cannot be empty")
     return create_playlist(name)
+
 
 @app.get("/playlists")
 def api_get_playlists():
     return get_playlists()
+
+
+@app.put("/playlists/{playlist_id}")
+def api_rename_playlist(playlist_id: int, payload: PlaylistRename):
+    updated = rename_playlist(playlist_id, payload.name)
+    if not updated:
+        raise HTTPException(status_code=404, detail="Плейлист не найден")
+    return updated
+
+
+@app.delete("/playlists/{playlist_id}")
+def api_delete_playlist(playlist_id: int):
+    ok = delete_playlist(playlist_id)
+    if not ok:
+        raise HTTPException(status_code=404, detail="Плейлист не найден")
+    return {"status": "ok", "deleted": True}
+
+
+@app.delete("/playlists/{playlist_id}/tracks/{track_id}")
+def api_remove_track_from_playlist(playlist_id: int, track_id: int):
+    removed = remove_track_from_playlist(playlist_id, track_id)
+    return {"status": "ok", "removed": removed}
 
 
 @app.post("/import/folder", response_model=ImportResult)
@@ -915,12 +1069,16 @@ def api_import_local_folder(payload: ImportFolderRequest):
         raise HTTPException(status_code=400, detail=f"Ошибка сканирования папки: {e}")
 
     if not scanned:
-        raise HTTPException(status_code=400, detail="В указанной папке не найдено аудиофайлов (.mp3, .flac, .m4a, .ogg, .wav)")
+        raise HTTPException(
+            status_code=400,
+            detail="В указанной папке не найдено аудиофайлов (.mp3, .flac, .m4a, .ogg, .wav)",
+        )
 
     result = bulk_import_tracks(
         scanned,
         target_mode=payload.target_mode,
-        playlist_name=payload.playlist_name
+        playlist_name=payload.playlist_name,
+        playlist_id=payload.playlist_id,
     )
     return result
 
@@ -930,30 +1088,55 @@ async def api_import_uploaded_files(request: Request):
     form = await request.form()
     target_mode = str(form.get("target_mode") or "both")
     playlist_name = str(form.get("playlist_name") or "Импорт из Яндекс Музыки")
+    raw_pid = form.get("playlist_id")
+    playlist_id = int(raw_pid) if raw_pid and str(raw_pid).isdigit() else None
     files = form.getlist("files")
-    saved_meta = []
+
+    saved_paths: List[Path] = []
     for uf in files:
-        orig_name = Path(uf.filename or "track.mp3").name
+        orig_name = Path(getattr(uf, "filename", None) or "track.mp3").name
+        orig_name = re.sub(r'[<>:"/\\|?*\x00-\x1f]', "_", orig_name).strip() or "track.mp3"
         ext = Path(orig_name).suffix.lower()
         if ext not in AUDIO_EXTENSIONS:
             continue
         dest = UPLOADS_DIR / orig_name
+        data = await uf.read()
+        if not data:
+            continue
         if dest.exists():
-            stem = dest.stem
-            dest = UPLOADS_DIR / f"{stem}_{int(time.time() * 1000) % 100000}{ext}"
-        with dest.open("wb") as out_f:
-            shutil.copyfileobj(uf.file, out_f)
-        saved_meta.append(extract_audio_metadata(dest))
+            try:
+                if dest.stat().st_size == len(data):
+                    saved_paths.append(dest)
+                    continue
+            except Exception:
+                pass
+            short_hash = hashlib.md5(data[:65536]).hexdigest()[:6]
+            dest = UPLOADS_DIR / f"{dest.stem}_{short_hash}{ext}"
+        if not dest.exists():
+            await asyncio.to_thread(dest.write_bytes, data)
+        saved_paths.append(dest)
 
-    if not saved_meta:
+    if not saved_paths:
         raise HTTPException(status_code=400, detail="Нет поддерживаемых аудиофайлов в загрузке")
 
-    mode = target_mode if target_mode in ("favorites", "playlist", "both") else "both"
-    return bulk_import_tracks(saved_meta, target_mode=mode, playlist_name=playlist_name)
+    saved_meta = await asyncio.gather(*(asyncio.to_thread(extract_audio_metadata, p) for p in saved_paths))
+
+    mode = target_mode if target_mode in ("favorites", "playlist", "both", "library") else "both"
+    return await asyncio.to_thread(
+        bulk_import_tracks,
+        list(saved_meta),
+        mode,
+        playlist_name,
+        playlist_id,
+    )
 
 
 @app.get("/playlists/{playlist_id}/tracks", response_model=list[TrackRead])
-def api_get_playlist_tracks(playlist_id: int, limit: int = Query(2000, ge=1, le=5000), offset: int = Query(0, ge=0)):
+def api_get_playlist_tracks(
+    playlist_id: int,
+    limit: int = Query(5000, ge=1, le=10000),
+    offset: int = Query(0, ge=0),
+):
     return get_playlist_tracks(playlist_id, limit=limit, offset=offset)
 
 
@@ -963,28 +1146,101 @@ def api_add_tracks_to_playlist(playlist_id: int, payload: PlaylistAddTracksReque
     return {"status": "ok", "added": added}
 
 
-@app.get("/network-info")
-def api_get_network_info(request: Request):
-    lan_ip = "127.0.0.1"
+def _detect_lan_ip() -> str:
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80))
-        lan_ip = s.getsockname()[0]
+        ip = s.getsockname()[0]
         s.close()
+        return ip
     except Exception:
-        pass
+        return "127.0.0.1"
 
-    tunnel_url = None
+
+def _detect_tailscale_ip() -> Optional[str]:
+    if not shutil.which("tailscale"):
+        return None
+    try:
+        out = subprocess.check_output(["tailscale", "ip", "-4"], timeout=2.0, text=True).strip()
+        first = out.splitlines()[0].strip() if out else None
+        return first if first else None
+    except Exception:
+        return None
+
+
+def _read_tunnel_url() -> Optional[str]:
     tunnel_file = BASE_DIR / ".tunnel_url"
     if tunnel_file.exists():
         try:
-            tunnel_url = tunnel_file.read_text(encoding="utf-8").strip() or None
+            url = tunnel_file.read_text(encoding="utf-8").strip()
+            if url.startswith("http"):
+                return url
         except Exception:
             pass
+    log_path = Path("/tmp/petproject_tunnel.log")
+    if log_path.exists():
+        try:
+            text = log_path.read_text(encoding="utf-8", errors="ignore")
+            matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", text)
+            if matches:
+                latest = matches[-1]
+                tunnel_file.write_text(latest, encoding="utf-8")
+                return latest
+        except Exception:
+            pass
+    return None
 
+
+@app.get("/network-info")
+def api_get_network_info(request: Request):
+    lan_ip = _detect_lan_ip()
     port = request.url.port or 8001
+    tunnel_url = _read_tunnel_url()
+    ts_ip = _detect_tailscale_ip()
+    tailscale_url = f"http://{ts_ip}:{port}" if ts_ip else None
+    cloudflared_installed = bool(shutil.which("cloudflared"))
+
     return {
+        "lan_ip": lan_ip,
+        "port": port,
         "lan_url": f"http://{lan_ip}:{port}",
         "tunnel_url": tunnel_url,
-        "host": request.headers.get("host", f"{lan_ip}:{port}")
+        "tailscale_url": tailscale_url,
+        "cloudflared_installed": cloudflared_installed,
+        "host": request.headers.get("host", f"{lan_ip}:{port}"),
     }
+
+
+@app.post("/network-info/start-tunnel")
+async def api_start_cloudflare_tunnel(request: Request):
+    """Запускает cloudflared-туннель прямо из веб-интерфейса, если сервер был запущен через run.py."""
+    global _tunnel_proc
+    existing = _read_tunnel_url()
+    if existing and _tunnel_proc and _tunnel_proc.poll() is None:
+        return {"status": "ok", "tunnel_url": existing}
+
+    if not shutil.which("cloudflared"):
+        raise HTTPException(
+            status_code=400,
+            detail="Утилита cloudflared не установлена в системе. Установите её (например: sudo pacman -S cloudflared или sudo apt install cloudflared) или используйте ./start_remote.sh",
+        )
+
+    port = request.url.port or 8001
+    log_path = Path("/tmp/petproject_tunnel.log")
+    try:
+        log_fp = open(log_path, "w", encoding="utf-8")
+        _tunnel_proc = subprocess.Popen(
+            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
+            stdout=log_fp,
+            stderr=subprocess.STDOUT,
+        )
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Не удалось запустить cloudflared: {e}")
+
+    for _ in range(24):
+        await asyncio.sleep(0.5)
+        url = _read_tunnel_url()
+        if url:
+            return {"status": "ok", "tunnel_url": url}
+
+    raise HTTPException(status_code=504, detail="Туннель запущен, но ссылка ещё формируется — обновите окно через пару секунд")

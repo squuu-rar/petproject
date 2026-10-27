@@ -2,32 +2,45 @@
 <html lang="ru">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
     <meta name="theme-color" content="#0e0d0c">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <meta name="apple-mobile-web-app-title" content="MusicStream">
     <title>MusicStream</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Onest:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap&subset=cyrillic">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
     <link rel="stylesheet" href="/static/css/style.css">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
     <link rel="manifest" href="/static/manifest.json">
+    <link rel="apple-touch-icon" href="/static/img/default-cover.png">
 </head>
 <body class="view-library">
     <header class="topbar">
-        <div class="topbar-logo">
-            <span class="logo-mark" aria-hidden="true"></span>
-            <span>MusicStream</span>
+        <div class="topbar-head-row">
+            <div class="topbar-logo">
+                <span class="logo-mark" aria-hidden="true"></span>
+                <span>MusicStream</span>
+            </div>
+            <div class="mobile-quick-actions">
+                <button type="button" class="mobile-top-btn" id="btn-mobile-import-top" title="Импорт треков" aria-label="Импорт треков">
+                    <i class="fas fa-file-import"></i>
+                </button>
+                <button type="button" class="mobile-top-btn mobile-top-btn--phone" id="btn-mobile-access-top" title="Вход с телефона" aria-label="Вход с телефона">
+                    <i class="fas fa-mobile-screen-button"></i>
+                </button>
+            </div>
         </div>
         <nav class="topnav" aria-label="Разделы">
-            <a href="#" class="nav-item active" data-view="library"><span class="nav-num">01</span>Библиотека</a>
-            <a href="#" class="nav-item" data-view="wave"><span class="nav-num">02</span>Моя волна</a>
-            <a href="#" class="nav-item" data-view="search"><span class="nav-num">03</span>Поиск</a>
-            <a href="#" class="nav-item" data-view="favorites"><span class="nav-num">04</span>Любимое</a>
+            <a href="#" class="nav-item active" data-view="library"><span class="nav-num">01</span><span>Библиотека</span></a>
+            <a href="#" class="nav-item" data-view="wave"><span class="nav-num">02</span><span>Моя волна</span></a>
+            <a href="#" class="nav-item" data-view="search"><span class="nav-num">03</span><span>Поиск</span></a>
+            <a href="#" class="nav-item" data-view="favorites"><span class="nav-num">04</span><span>Любимое</span></a>
+            <a href="#" class="nav-item" data-view="playlists"><span class="nav-num">05</span><span>Плейлисты</span></a>
         </nav>
+        <div id="ym-sidebar-extensions" class="sidebar-extra-section"></div>
     </header>
 
     <main class="main-content" id="main-content">
@@ -40,7 +53,7 @@
 
     <!-- Плеер: в режиме «Моя волна» уходит со сцены, трек уже показан на деке -->
     <footer class="player-dock" id="player-dock" aria-label="Плеер">
-        <div class="player-dock-left player-info">
+        <div class="player-dock-left player-info" id="player-dock-info">
             <img src="/static/img/default-cover.svg" alt="" class="player-dock-cover" id="player-cover">
             <div class="player-dock-titles">
                 <span class="player-dock-title" id="player-title">Трек не выбран</span>
@@ -72,7 +85,7 @@
         </div>
     </footer>
 
-    <audio id="audio-player" preload="metadata"></audio>
+    <audio id="audio-player" preload="auto" playsinline></audio>
     <script type="module" src="/static/js/app.js"></script>
 </body>
 </html>

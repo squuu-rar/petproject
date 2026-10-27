@@ -30,7 +30,8 @@ document.addEventListener('DOMContentLoaded', () => {
         wave: 'fa-tower-broadcast',
         search: 'fa-magnifying-glass',
         library: 'fa-music',
-        favorites: 'fa-heart'
+        favorites: 'fa-heart',
+        playlists: 'fa-folder-open'
     };
     document.querySelectorAll('.nav-item').forEach(el => {
         const v = el.dataset.view;
@@ -284,7 +285,7 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     function fetchFavorites(params = {}) {
-        return fetchJson(`/favorites?${new URLSearchParams({ limit: 100, ...params }).toString()}`);
+        return fetchJson(`/favorites?${new URLSearchParams({ limit: 5000, ...params }).toString()}`);
     }
 
     function searchTracks(query) {
@@ -1093,25 +1094,134 @@ document.addEventListener('DOMContentLoaded', () => {
         return row;
     }
 
-    function renderTracklist(tracks, emptyText = 'Треки не найдены') {
-        visibleTracks = Array.isArray(tracks) ? tracks : [];
+    function renderTracklist(tracks, emptyText = 'Треки не найдены', options = {}) {
+        const allItems = Array.isArray(tracks) ? tracks : [];
+        visibleTracks = allItems;
         tracklist.innerHTML = '';
         if (viewMeta) {
-            const n = visibleTracks.length;
+            const n = allItems.length;
             viewMeta.textContent = n ? `${n} ${plural(n, ['трек', 'трека', 'треков'])}` : '';
         }
-        if (visibleTracks.length === 0) {
-            tracklist.innerHTML = `<div class="empty-note" style="padding:36px 40px;">${escapeHtml(emptyText)}</div>`;
+
+        const pl = options.playlist || null;
+
+        // Верхняя панель действий (Слушать все, Перемешать, Импорт, быстрый фильтр по 1000+ трекам)
+        const toolbar = document.createElement('div');
+        toolbar.className = 'collection-toolbar';
+        toolbar.innerHTML = `
+            <div class="collection-toolbar-actions">
+                ${pl ? `<button type="button" class="toolbar-btn toolbar-btn--ghost" id="btn-pl-back"><i class="fas fa-arrow-left"></i><span>Плейлисты</span></button>` : ''}
+                ${allItems.length > 0 ? `
+                    <button type="button" class="toolbar-btn toolbar-btn--primary" id="btn-col-play-all">
+                        <i class="fas fa-play"></i><span>Слушать (${allItems.length})</span>
+                    </button>
+                    <button type="button" class="toolbar-btn" id="btn-col-shuffle">
+                        <i class="fas fa-shuffle"></i><span>Перемешать</span>
+                    </button>
+                ` : ''}
+                <button type="button" class="toolbar-btn" id="btn-col-import">
+                    <i class="fas fa-file-import"></i><span>${pl ? 'Пополнить плейлист' : 'Импорт треков'}</span>
+                </button>
+                ${pl ? `
+                    <button type="button" class="toolbar-btn toolbar-btn--danger" id="btn-pl-delete" title="Удалить плейлист">
+                        <i class="fas fa-trash-can"></i>
+                    </button>
+                ` : ''}
+            </div>
+            ${allItems.length > 5 ? `
+                <div class="collection-filter-wrap">
+                    <i class="fas fa-magnifying-glass collection-filter-icon"></i>
+                    <input type="search" id="collection-filter-input" class="collection-filter-input"
+                           placeholder="Быстрый фильтр по ${allItems.length} ${plural(allItems.length, ['треку', 'трекам', 'трекам'])} (название, артист, альбом)…"
+                           autocomplete="off" spellcheck="false">
+                </div>
+            ` : ''}
+        `;
+        tracklist.appendChild(toolbar);
+
+        toolbar.querySelector('#btn-pl-back')?.addEventListener('click', () => {
+            renderPlaylistsGridView();
+        });
+        toolbar.querySelector('#btn-col-play-all')?.addEventListener('click', () => {
+            if (visibleTracks.length > 0) playFromList(visibleTracks, 0);
+        });
+        toolbar.querySelector('#btn-col-shuffle')?.addEventListener('click', () => {
+            if (visibleTracks.length > 0) {
+                const shuffled = [...visibleTracks];
+                for (let i = shuffled.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+                }
+                playFromList(shuffled, 0);
+                showToast(`🔀 Включён перемешанный порядок (${shuffled.length} треков)`);
+            }
+        });
+        toolbar.querySelector('#btn-col-import')?.addEventListener('click', () => {
+            openImportModal(pl);
+        });
+        toolbar.querySelector('#btn-pl-delete')?.addEventListener('click', async () => {
+            if (!pl) return;
+            if (!confirm(`Удалить плейлист «${pl.name}»? (Сами треки останутся в медиатеке)`)) return;
+            try {
+                await fetch(`/playlists/${pl.id}`, { method: 'DELETE' });
+                showToast(`Плейлист «${pl.name}» удалён`);
+                await refreshSidebarPlaylists();
+                renderPlaylistsGridView();
+            } catch {
+                showToast('⚠️ Не удалось удалить плейлист');
+            }
+        });
+
+        if (allItems.length === 0) {
+            const emptyEl = document.createElement('div');
+            emptyEl.className = 'empty-note';
+            emptyEl.style.padding = '36px 40px';
+            emptyEl.textContent = emptyText;
+            tracklist.appendChild(emptyEl);
             return;
         }
+
         const wrapper = document.createElement('div');
         wrapper.className = 'track-list-wrapper';
-        wrapper.insertAdjacentHTML('beforeend',
-            '<div class="track-table-head"><span>№</span><span></span><span>Название</span><span>Альбом</span><span>Время</span><span></span></div>');
-        visibleTracks.forEach((track, index) => {
-            wrapper.appendChild(createTrackRow(track, visibleTracks, index));
-        });
         tracklist.appendChild(wrapper);
+
+        const paintRows = (subset) => {
+            visibleTracks = subset;
+            wrapper.innerHTML = '<div class="track-table-head"><span>№</span><span></span><span>Название</span><span>Альбом</span><span>Время</span><span></span></div>';
+            if (subset.length === 0) {
+                wrapper.insertAdjacentHTML('beforeend', '<div class="empty-note" style="padding:28px 20px;">По фильтру ничего не найдено</div>');
+                return;
+            }
+            const frag = document.createDocumentFragment();
+            subset.forEach((track, index) => {
+                frag.appendChild(createTrackRow(track, subset, index));
+            });
+            wrapper.appendChild(frag);
+            updateActiveTrackUI();
+        };
+
+        paintRows(allItems);
+
+        const filterInput = toolbar.querySelector('#collection-filter-input');
+        if (filterInput) {
+            let filterTimer = null;
+            filterInput.addEventListener('input', () => {
+                clearTimeout(filterTimer);
+                filterTimer = setTimeout(() => {
+                    const q = filterInput.value.trim().toLowerCase();
+                    if (!q) {
+                        paintRows(allItems);
+                        return;
+                    }
+                    const filtered = allItems.filter(t =>
+                        (t.title && t.title.toLowerCase().includes(q)) ||
+                        (t.artist && t.artist.toLowerCase().includes(q)) ||
+                        (t.album && t.album.toLowerCase().includes(q))
+                    );
+                    paintRows(filtered);
+                }, 120);
+            });
+        }
     }
 
     function paintNowPlaying(track) {
@@ -2048,7 +2158,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } else if (view === 'library') {
             if (viewTitle) viewTitle.textContent = 'Библиотека';
             try {
-                const tracks = await fetchTracks({ limit: 100 });
+                const tracks = await fetchTracks({ limit: 5000 });
                 if (seq !== viewSeq) return;
                 renderTracklist(tracks);
             } catch {
@@ -2060,11 +2170,13 @@ document.addEventListener('DOMContentLoaded', () => {
             try {
                 const favs = await fetchFavorites();
                 if (seq !== viewSeq) return;
-                renderTracklist(favs, 'Пока нет любимых треков — нажмите ♥ на любом треке');
+                renderTracklist(favs, 'Пока нет любимых треков — нажмите ♥ на любом треке или импортируйте из Яндекс Музыки');
             } catch {
                 if (seq !== viewSeq) return;
                 tracklist.innerHTML = '<div class="error-note" style="padding:36px 40px;">Ошибка загрузки избранного</div>';
             }
+        } else if (view === 'playlists') {
+            await renderPlaylistsGridView();
         }
     }
 
@@ -2075,7 +2187,7 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     });
 
-    fetchTracks({ limit: 100 }).then(tracks => {
+    fetchTracks({ limit: 5000 }).then(tracks => {
         renderTracklist(tracks);
         if (location.hash.startsWith('#/artist/')) {
             const initArtist = decodeURIComponent(location.hash.slice('#/artist/'.length));
@@ -2251,7 +2363,9 @@ document.addEventListener('DOMContentLoaded', () => {
     artistVolObserver.observe(document.body, { childList: true, subtree: true });
     mountArtistVolumeControl();
 
-    // === MASS IMPORT & MOBILE ACCESS MODULE ===
+    // === MASS IMPORT, PLAYLISTS & MOBILE ACCESS MODULE ===
+    let activePlaylistId = null;
+
     async function refreshSidebarPlaylists() {
         const container = document.getElementById('sidebar-playlists-list');
         if (!container) return;
@@ -2260,12 +2374,16 @@ document.addEventListener('DOMContentLoaded', () => {
             if (!resp.ok) return;
             const playlists = await resp.json();
             container.innerHTML = '';
+            if (playlists.length === 0) {
+                container.innerHTML = '<div style="font-size:12px;color:rgba(255,255,255,0.4);padding:4px 12px;">Плейлистов пока нет</div>';
+                return;
+            }
             playlists.forEach(pl => {
                 const row = document.createElement('div');
-                row.className = 'sidebar-playlist-item';
+                row.className = 'sidebar-playlist-item' + (activePlaylistId === pl.id && currentView === 'playlists' ? ' active' : '');
                 row.innerHTML = `
-                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🎵 ${pl.name}</span>
-                    <span style="font-size:11px;opacity:0.6;">${pl.track_count}</span>
+                    <span style="overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">🎵 ${escapeHtml(pl.name)}</span>
+                    <span class="sidebar-playlist-badge">${pl.track_count}</span>
                 `;
                 row.addEventListener('click', () => openPlaylistView(pl));
                 container.appendChild(row);
@@ -2275,26 +2393,172 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function openPlaylistView(pl) {
+    async function renderPlaylistsGridView() {
+        if (artistLayerEl) closeArtistView({ updateHash: true });
+        if (lyricsOverlayEl) closeLyricsOverlay();
+        activePlaylistId = null;
+        currentView = 'playlists';
+        document.body.className = 'view-playlists';
+        document.querySelectorAll('.nav-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.view === 'playlists');
+        });
+        if (viewTitle) viewTitle.textContent = 'Мои плейлисты';
+        if (viewMeta) viewMeta.textContent = '';
+
+        tracklist.innerHTML = '<div class="empty-note" style="padding:36px 40px;"><i class="fas fa-spinner fa-spin"></i> Загрузка плейлистов…</div>';
+
         try {
-            const resp = await fetch(`/playlists/${pl.id}/tracks?limit=5000`);
-            if (!resp.ok) return;
-            const tracks = await resp.json();
-            if (typeof renderTracks === 'function') {
-                renderTracks(tracks);
+            const [playlists, taste] = await Promise.all([
+                fetchJson('/playlists').catch(() => []),
+                fetchJson('/taste-profile').catch(() => null)
+            ]);
+            if (viewMeta) {
+                viewMeta.textContent = `${playlists.length} ${plural(playlists.length, ['плейлист', 'плейлиста', 'плейлистов'])}`;
             }
-            const titleEl = document.querySelector('#section-title, .section-title, h1, h2');
-            if (titleEl) {
-                titleEl.textContent = `Плейлист: ${pl.name} (${tracks.length})`;
-            }
+
+            const wrap = document.createElement('div');
+            wrap.className = 'playlists-hub';
+
+            const tasteBannerHtml = taste ? `
+                <div class="taste-profile-banner">
+                    <div class="taste-banner-info">
+                        <span class="taste-banner-badge"><i class="fas fa-wand-magic-sparkles"></i> Профиль «Моей Волны» активен</span>
+                        <h3>В медиатеке ${taste.total_tracks} ${plural(taste.total_tracks, ['трек', 'трека', 'треков'])} · В Любимом: ${taste.liked_tracks} · Топ-артистов: ${taste.taste_artists_count}</h3>
+                        <p>Все ваши импортированные треки и плейлисты напрямую формируют рекомендации «Моей Волны».</p>
+                        ${taste.taste_artists && taste.taste_artists.length ? `
+                            <div class="taste-artists-pills">
+                                ${taste.taste_artists.slice(0, 10).map(a => `<span class="taste-artist-pill clickable-artist">${escapeHtml(a)}</span>`).join('')}
+                            </div>
+                        ` : ''}
+                    </div>
+                    <div class="taste-banner-actions">
+                        <button type="button" class="toolbar-btn toolbar-btn--primary" id="btn-hub-start-wave">
+                            <i class="fas fa-play"></i><span>Запустить Мою Волну</span>
+                        </button>
+                        <button type="button" class="toolbar-btn" id="btn-hub-import">
+                            <i class="fas fa-file-import"></i><span>Импорт треков (1000+)</span>
+                        </button>
+                        <button type="button" class="toolbar-btn" id="btn-hub-create-pl">
+                            <i class="fas fa-plus"></i><span>Создать плейлист</span>
+                        </button>
+                    </div>
+                </div>
+            ` : '';
+
+            wrap.innerHTML = `
+                ${tasteBannerHtml}
+                <div class="playlists-grid" id="playlists-grid"></div>
+            `;
+
+            tracklist.innerHTML = '';
+            tracklist.appendChild(wrap);
+
+            wrap.querySelector('#btn-hub-start-wave')?.addEventListener('click', () => switchView('wave'));
+            wrap.querySelector('#btn-hub-import')?.addEventListener('click', () => openImportModal());
+            wrap.querySelector('#btn-hub-create-pl')?.addEventListener('click', async () => {
+                const name = prompt('Введите название нового плейлиста:', 'Мой плейлист');
+                if (!name || !name.trim()) return;
+                try {
+                    const created = await fetchJson('/playlists', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ name: name.trim() })
+                    });
+                    await refreshSidebarPlaylists();
+                    openPlaylistView(created);
+                } catch {
+                    showToast('⚠️ Не удалось создать плейлист');
+                }
+            });
+
+            const grid = wrap.querySelector('#playlists-grid');
+
+            // Карточка «Любимые треки»
+            const favCard = document.createElement('div');
+            favCard.className = 'playlist-card playlist-card--favorites';
+            favCard.innerHTML = `
+                <div class="playlist-card-cover playlist-card-cover--heart">
+                    <i class="fas fa-heart"></i>
+                    <button type="button" class="playlist-card-play" title="Слушать Любимое"><i class="fas fa-play"></i></button>
+                </div>
+                <div class="playlist-card-title">Мне нравится</div>
+                <div class="playlist-card-meta">${taste ? taste.liked_tracks : ''} любимых треков</div>
+            `;
+            favCard.addEventListener('click', () => switchView('favorites'));
+            grid.appendChild(favCard);
+
+            playlists.forEach(pl => {
+                const card = document.createElement('div');
+                card.className = 'playlist-card';
+                card.innerHTML = `
+                    <div class="playlist-card-cover">
+                        <img src="${escapeHtml(pl.cover_path || DEFAULT_COVER)}" alt="" loading="lazy">
+                        <button type="button" class="playlist-card-play" title="Слушать плейлист"><i class="fas fa-play"></i></button>
+                    </div>
+                    <div class="playlist-card-title" title="${escapeHtml(pl.name)}">${escapeHtml(pl.name)}</div>
+                    <div class="playlist-card-meta">${pl.track_count} ${plural(pl.track_count, ['трек', 'трека', 'треков'])}</div>
+                `;
+                bindImgFallback(card.querySelector('img'));
+                card.querySelector('.playlist-card-play')?.addEventListener('click', async (e) => {
+                    e.stopPropagation();
+                    try {
+                        const tracks = await fetchJson(`/playlists/${pl.id}/tracks?limit=5000`);
+                        if (tracks.length > 0) {
+                            playFromList(tracks, 0);
+                            showToast(`▶ Играет плейлист «${pl.name}»`);
+                        } else {
+                            openPlaylistView(pl);
+                        }
+                    } catch {}
+                });
+                card.addEventListener('click', () => openPlaylistView(pl));
+                grid.appendChild(card);
+            });
+
+            await refreshSidebarPlaylists();
         } catch (err) {
-            console.error('Не удалось открыть плейлист:', err);
+            console.error('Ошибка загрузки плейлистов:', err);
+            tracklist.innerHTML = '<div class="error-note" style="padding:36px 40px;">Не удалось загрузить плейлисты</div>';
         }
     }
 
-    function openImportModal() {
+    async function openPlaylistView(pl) {
+        if (!pl || !pl.id) return;
+        if (artistLayerEl) closeArtistView({ updateHash: true });
+        if (lyricsOverlayEl) closeLyricsOverlay();
+
+        activePlaylistId = pl.id;
+        currentView = 'playlists';
+        document.body.className = 'view-playlists';
+        document.querySelectorAll('.nav-item').forEach(el => {
+            el.classList.toggle('active', el.dataset.view === 'playlists');
+        });
+        await refreshSidebarPlaylists();
+
+        if (viewTitle) viewTitle.textContent = `Плейлист: ${pl.name}`;
+        if (viewMeta) viewMeta.textContent = 'Загрузка…';
+
+        try {
+            const resp = await fetch(`/playlists/${pl.id}/tracks?limit=5000`);
+            if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
+            const tracks = await resp.json();
+            renderTracklist(tracks, 'В этом плейлисте пока нет треков — нажмите «Пополнить плейлист»', { playlist: pl });
+        } catch (err) {
+            console.error('Не удалось открыть плейлист:', err);
+            showToast('⚠️ Ошибка открытия плейлиста');
+        }
+    }
+
+    async function openImportModal(preselectedPlaylist = null) {
         const existing = document.getElementById('ym-import-modal');
         if (existing) existing.remove();
+
+        let existingPlaylists = [];
+        try {
+            existingPlaylists = await fetchJson('/playlists');
+        } catch {
+            existingPlaylists = [];
+        }
 
         const overlay = document.createElement('div');
         overlay.id = 'ym-import-modal';
@@ -2302,39 +2566,75 @@ document.addEventListener('DOMContentLoaded', () => {
         overlay.innerHTML = `
             <div class="ym-modal-card">
                 <div class="ym-modal-header">
-                    <h3>📥 Импорт своей музыки (1000+ треков)</h3>
-                    <button class="ym-modal-close" id="ym-import-close">&times;</button>
+                    <h3>📥 Перенос своей музыки (1000+ треков)</h3>
+                    <button class="ym-modal-close" id="ym-import-close" aria-label="Закрыть">&times;</button>
                 </div>
 
-                <label style="font-size:13px;color:#ccc;">Куда добавить импортируемые треки?</label>
+                <p class="ym-modal-subtitle">
+                    Перенесите скачанные треки из Яндекс Музыки или с устройства. Они автоматически повлияют на рекомендации <b>«Моей Волны»</b>.
+                </p>
+
+                <label class="ym-label">1. Куда добавить треки?</label>
                 <select id="ym-target-mode" class="ym-select">
-                    <option value="both">❤️ В «Мне нравится» + создать отдельный плейлист</option>
-                    <option value="favorites">❤️ Только в «Мне нравится» (Любимые)</option>
-                    <option value="playlist">🎵 Только в отдельный плейлист</option>
+                    <option value="both" ${!preselectedPlaylist ? 'selected' : ''}>❤️ В «Любимое» + в отдельный плейлист (рекомендуется)</option>
+                    <option value="favorites">❤️ Только в «Любимое» (Мне нравится)</option>
+                    <option value="playlist" ${preselectedPlaylist ? 'selected' : ''}>🎵 Только в отдельный плейлист</option>
                 </select>
 
-                <div id="ym-playlist-name-wrap">
-                    <label style="font-size:13px;color:#ccc;">Название плейлиста:</label>
-                    <input type="text" id="ym-playlist-name" class="ym-input" value="Из Яндекс Музыки" placeholder="Например: Из Яндекс Музыки">
+                <div id="ym-playlist-config-wrap">
+                    <label class="ym-label">Плейлист назначения:</label>
+                    <select id="ym-playlist-select" class="ym-select">
+                        <option value="__new__">➕ Создать новый плейлист…</option>
+                        ${existingPlaylists.map(p => `
+                            <option value="${p.id}" data-name="${escapeHtml(p.name)}" ${preselectedPlaylist && preselectedPlaylist.id === p.id ? 'selected' : ''}>
+                                🎵 ${escapeHtml(p.name)} (${p.track_count} треков)
+                            </option>
+                        `).join('')}
+                    </select>
+                    <div id="ym-new-playlist-input-wrap" style="${preselectedPlaylist ? 'display:none;' : ''}">
+                        <input type="text" id="ym-playlist-name" class="ym-input" value="${escapeHtml(preselectedPlaylist ? preselectedPlaylist.name : 'Импорт из Яндекс Музыки')}" placeholder="Название нового плейлиста">
+                    </div>
                 </div>
 
-                <hr style="border:none;border-top:1px solid rgba(255,255,255,0.1);margin:14px 0;">
+                <div class="ym-divider"></div>
 
-                <label style="font-size:13px;color:#ccc;font-weight:600;">Способ 1. Мгновенный импорт папки на ПК (рекомендуется для 1000+ песен):</label>
-                <input type="text" id="ym-folder-path" class="ym-input" placeholder="/home/squ/Downloads/YandexMusic">
-                <button type="button" id="ym-btn-scan-folder" class="ym-btn-primary" style="margin-bottom:16px;">
-                    ⚡ Сканировать и импортировать папку
-                </button>
+                <div class="ym-import-section">
+                    <label class="ym-label ym-label--bold">Способ А. Мгновенный импорт папки на компьютере (1000+ песен за 2 сек):</label>
+                    <div class="ym-quick-paths">
+                        <button type="button" class="ym-chip" data-path="/home/squ/Downloads/Мне нравится">📁 /home/squ/Downloads/Мне нравится</button>
+                        <button type="button" class="ym-chip" data-path="/home/squ/Downloads">📁 /home/squ/Downloads</button>
+                        <button type="button" class="ym-chip" data-path="~/Music">📁 ~/Music</button>
+                    </div>
+                    <input type="text" id="ym-folder-path" class="ym-input" value="/home/squ/Downloads/Мне нравится" placeholder="/home/squ/Downloads/Мне нравится">
+                    <button type="button" id="ym-btn-scan-folder" class="ym-btn-primary">
+                        ⚡ Сканировать и перенести папку с диска
+                    </button>
+                </div>
 
-                <label style="font-size:13px;color:#ccc;font-weight:600;">Способ 2. Выбрать файлы или папку через браузер (с телефона/ПК):</label>
-                <input type="file" id="ym-file-input" class="ym-input" multiple accept=".mp3,.flac,.m4a,.ogg,.opus,.wav,.aac">
-                <button type="button" id="ym-btn-upload-files" class="ym-btn-primary" style="background:#32d74b;color:#000;">
-                    📤 Загрузить выбранные файлы
-                </button>
+                <div class="ym-divider"></div>
+
+                <div class="ym-import-section">
+                    <label class="ym-label ym-label--bold">Способ Б. Загрузить файлы или папку через браузер (с телефона или ПК):</label>
+                    <div class="ym-file-pickers">
+                        <label class="ym-file-btn">
+                            <i class="fas fa-music"></i> <span>Выбрать аудиофайлы</span>
+                            <input type="file" id="ym-file-input" multiple accept=".mp3,.flac,.m4a,.ogg,.opus,.wav,.aac" hidden>
+                        </label>
+                        <label class="ym-file-btn ym-file-btn--folder">
+                            <i class="fas fa-folder-open"></i> <span>Выбрать целую папку</span>
+                            <input type="file" id="ym-dir-input" webkitdirectory directory multiple hidden>
+                        </label>
+                    </div>
+                    <div id="ym-selected-files-info" class="ym-selected-info">Файлы не выбраны</div>
+                    <button type="button" id="ym-btn-upload-files" class="ym-btn-primary ym-btn-primary--green" disabled>
+                        📤 Начать пакетную загрузку
+                    </button>
+                </div>
 
                 <div id="ym-import-status" style="display:none;margin-top:14px;">
                     <div class="ym-progress-bar"><div class="ym-progress-fill" id="ym-progress-fill"></div></div>
-                    <div id="ym-status-text" style="font-size:13px;color:#ddd;text-align:center;">Подготовка...</div>
+                    <div id="ym-status-text" style="font-size:13px;color:#eee;text-align:center;line-height:1.45;">Подготовка...</div>
+                    <div id="ym-after-actions" class="ym-after-actions" style="display:none;"></div>
                 </div>
             </div>
         `;
@@ -2342,29 +2642,93 @@ document.addEventListener('DOMContentLoaded', () => {
         document.body.appendChild(overlay);
 
         const modeSel = overlay.querySelector('#ym-target-mode');
-        const plWrap = overlay.querySelector('#ym-playlist-name-wrap');
+        const plConfigWrap = overlay.querySelector('#ym-playlist-config-wrap');
+        const plSelect = overlay.querySelector('#ym-playlist-select');
+        const newPlWrap = overlay.querySelector('#ym-new-playlist-input-wrap');
+        const folderPathInput = overlay.querySelector('#ym-folder-path');
+
         modeSel.addEventListener('change', () => {
-            plWrap.style.display = modeSel.value === 'favorites' ? 'none' : 'block';
+            plConfigWrap.style.display = modeSel.value === 'favorites' ? 'none' : 'block';
+        });
+
+        plSelect.addEventListener('change', () => {
+            newPlWrap.style.display = plSelect.value === '__new__' ? 'block' : 'none';
+        });
+
+        overlay.querySelectorAll('.ym-chip').forEach(chip => {
+            chip.addEventListener('click', () => {
+                folderPathInput.value = chip.dataset.path;
+            });
         });
 
         overlay.querySelector('#ym-import-close').onclick = () => overlay.remove();
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
 
         const statusBox = overlay.querySelector('#ym-import-status');
-        const progressFill = overlay.querySelector('#ym-progress-fill');
+        const progressFillEl = overlay.querySelector('#ym-progress-fill');
         const statusText = overlay.querySelector('#ym-status-text');
+        const afterActions = overlay.querySelector('#ym-after-actions');
 
-        // Способ 1: локальная папка
+        const getTargetPlaylistParams = () => {
+            if (modeSel.value === 'favorites') {
+                return { playlist_id: null, playlist_name: null };
+            }
+            if (plSelect.value !== '__new__') {
+                const opt = plSelect.options[plSelect.selectedIndex];
+                return {
+                    playlist_id: Number(plSelect.value),
+                    playlist_name: opt ? opt.dataset.name : 'Импорт из Яндекс Музыки'
+                };
+            }
+            const nameVal = overlay.querySelector('#ym-playlist-name').value.trim() || 'Импорт из Яндекс Музыки';
+            return { playlist_id: null, playlist_name: nameVal };
+        };
+
+        const renderPostImportActions = (resData) => {
+            afterActions.style.display = 'flex';
+            afterActions.innerHTML = `
+                ${resData.playlist_id ? `
+                    <button type="button" class="toolbar-btn toolbar-btn--primary" id="ym-go-playlist">
+                        <i class="fas fa-folder-open"></i><span>Открыть «${escapeHtml(resData.playlist_name || 'Плейлист')}»</span>
+                    </button>
+                ` : ''}
+                ${modeSel.value !== 'playlist' ? `
+                    <button type="button" class="toolbar-btn" id="ym-go-favorites">
+                        <i class="fas fa-heart"></i><span>Открыть Любимое</span>
+                    </button>
+                ` : ''}
+                <button type="button" class="toolbar-btn" id="ym-go-wave">
+                    <i class="fas fa-tower-broadcast"></i><span>Запустить Мою Волну</span>
+                </button>
+            `;
+            afterActions.querySelector('#ym-go-playlist')?.addEventListener('click', () => {
+                overlay.remove();
+                openPlaylistView({ id: resData.playlist_id, name: resData.playlist_name || 'Импорт из Яндекс Музыки' });
+            });
+            afterActions.querySelector('#ym-go-favorites')?.addEventListener('click', () => {
+                overlay.remove();
+                switchView('favorites');
+            });
+            afterActions.querySelector('#ym-go-wave')?.addEventListener('click', () => {
+                overlay.remove();
+                initWavePlayback();
+                switchView('wave');
+            });
+        };
+
+        // Способ А: локальная папка
         overlay.querySelector('#ym-btn-scan-folder').addEventListener('click', async () => {
-            const folderPath = overlay.querySelector('#ym-folder-path').value.trim();
+            const folderPath = folderPathInput.value.trim();
             if (!folderPath) {
-                alert('Укажите путь к папке с музыкой (например: /home/squ/Downloads)');
+                showToast('Укажите путь к папке с музыкой');
                 return;
             }
             statusBox.style.display = 'block';
-            progressFill.style.width = '40%';
-            statusText.textContent = 'Сканируем аудиофайлы и читаем метаданные...';
+            afterActions.style.display = 'none';
+            progressFillEl.style.width = '45%';
+            statusText.textContent = 'Сканируем аудиофайлы, обложки и обновляем профиль «Моей Волны»…';
 
+            const plParams = getTargetPlaylistParams();
             try {
                 const resp = await fetch('/import/folder', {
                     method: 'POST',
@@ -2372,62 +2736,92 @@ document.addEventListener('DOMContentLoaded', () => {
                     body: JSON.stringify({
                         folder_path: folderPath,
                         target_mode: modeSel.value,
-                        playlist_name: overlay.querySelector('#ym-playlist-name').value.trim() || 'Из Яндекс Музыки'
+                        playlist_name: plParams.playlist_name,
+                        playlist_id: plParams.playlist_id
                     })
                 });
                 const data = await resp.json();
-                if (!resp.ok) throw new Error(data.detail || 'Ошибка импорта');
-                progressFill.style.width = '100%';
-                statusText.textContent = `✅ Готово! Импортировано треков: ${data.imported_count} (всего в папке: ${data.total_scanned}). Рекомендации «Моей волны» обновлены!`;
+                if (!resp.ok) throw new Error(data.detail || 'Ошибка импорта папки');
+                progressFillEl.style.width = '100%';
+                statusText.innerHTML = `✅ <b>Готово!</b> Перенесено треков: <b>${data.imported_count}</b> (новых: ${data.new_inserted ?? data.imported_count}).<br>В профиле «Моей Волны» теперь учитывается <b>${data.taste_artists_count || 'более 30'}</b> любимых исполнителей!`;
                 await refreshSidebarPlaylists();
-                if (data.playlist_id && modeSel.value !== 'favorites') {
-                    openPlaylistView({ id: data.playlist_id, name: data.playlist_name });
-                }
+                renderPostImportActions(data);
             } catch (err) {
-                progressFill.style.width = '0%';
+                progressFillEl.style.width = '0%';
                 statusText.textContent = `❌ ${err.message}`;
             }
         });
 
-        // Способ 2: пакетная загрузка файлов пачками по 15 штук
-        overlay.querySelector('#ym-btn-upload-files').addEventListener('click', async () => {
-            const fileInput = overlay.querySelector('#ym-file-input');
-            const files = Array.from(fileInput.files || []);
-            if (!files.length) {
-                alert('Сначала выберите аудиофайлы!');
-                return;
+        // Способ Б: выбор файлов или папки в браузере
+        let pendingFiles = [];
+        const fileInput = overlay.querySelector('#ym-file-input');
+        const dirInput = overlay.querySelector('#ym-dir-input');
+        const selectedInfo = overlay.querySelector('#ym-selected-files-info');
+        const uploadBtn = overlay.querySelector('#ym-btn-upload-files');
+        const allowedExts = new Set(['.mp3', '.flac', '.m4a', '.ogg', '.opus', '.wav', '.aac']);
+
+        const onFilesSelected = (fileList) => {
+            const raw = Array.from(fileList || []);
+            pendingFiles = raw.filter(f => {
+                const name = (f.name || '').toLowerCase();
+                const dot = name.lastIndexOf('.');
+                return dot !== -1 && allowedExts.has(name.slice(dot));
+            });
+            if (pendingFiles.length === 0) {
+                selectedInfo.textContent = 'Не найдено поддерживаемых аудиофайлов (.mp3, .flac, .m4a, .ogg, .wav)';
+                uploadBtn.disabled = true;
+            } else {
+                selectedInfo.textContent = `Выбрано аудиофайлов для переноса: ${pendingFiles.length}`;
+                uploadBtn.disabled = false;
+                uploadBtn.textContent = `📤 Загрузить ${pendingFiles.length} ${plural(pendingFiles.length, ['трек', 'трека', 'треков'])}`;
             }
+        };
+
+        fileInput.addEventListener('change', () => onFilesSelected(fileInput.files));
+        dirInput.addEventListener('change', () => onFilesSelected(dirInput.files));
+
+        uploadBtn.addEventListener('click', async () => {
+            if (!pendingFiles.length) return;
+            uploadBtn.disabled = true;
             statusBox.style.display = 'block';
+            afterActions.style.display = 'none';
+
             const batchSize = 15;
             let importedTotal = 0;
-            let lastPlaylist = null;
-            const plName = overlay.querySelector('#ym-playlist-name').value.trim() || 'Из Яндекс Музыки';
+            let lastResult = null;
+            const plParams = getTargetPlaylistParams();
+            let resolvedPlaylistId = plParams.playlist_id;
 
-            for (let i = 0; i < files.length; i += batchSize) {
-                const chunk = files.slice(i, i + batchSize);
+            for (let i = 0; i < pendingFiles.length; i += batchSize) {
+                const chunk = pendingFiles.slice(i, i + batchSize);
                 const form = new FormData();
                 chunk.forEach(f => form.append('files', f));
                 form.append('target_mode', modeSel.value);
-                form.append('playlist_name', plName);
+                if (plParams.playlist_name) form.append('playlist_name', plParams.playlist_name);
+                if (resolvedPlaylistId) form.append('playlist_id', String(resolvedPlaylistId));
 
-                const pct = Math.round((i / files.length) * 100);
-                progressFill.style.width = `${pct}%`;
-                statusText.textContent = `Загрузка: ${i} из ${files.length} треков...`;
+                const pct = Math.round((i / pendingFiles.length) * 100);
+                progressFillEl.style.width = `${pct}%`;
+                statusText.textContent = `Перенос треков: ${i} из ${pendingFiles.length} (${pct}%)…`;
 
-                const resp = await fetch('/import/upload', { method: 'POST', body: form });
-                if (resp.ok) {
-                    const resData = await resp.json();
-                    importedTotal += resData.imported_count || 0;
-                    lastPlaylist = resData;
+                try {
+                    const resp = await fetch('/import/upload', { method: 'POST', body: form });
+                    if (resp.ok) {
+                        const resData = await resp.json();
+                        importedTotal += resData.imported_count || 0;
+                        lastResult = resData;
+                        if (resData.playlist_id) resolvedPlaylistId = resData.playlist_id;
+                    }
+                } catch (err) {
+                    console.error('Ошибка батча загрузки:', err);
                 }
             }
 
-            progressFill.style.width = '100%';
-            statusText.textContent = `✅ Загружено и добавлено треков: ${importedTotal} из ${files.length}!`;
+            progressFillEl.style.width = '100%';
+            statusText.innerHTML = `✅ <b>Успешно перенесено треков: ${importedTotal} из ${pendingFiles.length}!</b><br>Все треки подключены к рекомендациям «Моей Волны».`;
+            uploadBtn.disabled = false;
             await refreshSidebarPlaylists();
-            if (lastPlaylist && lastPlaylist.playlist_id && modeSel.value !== 'favorites') {
-                openPlaylistView({ id: lastPlaylist.playlist_id, name: lastPlaylist.playlist_name });
-            }
+            if (lastResult) renderPostImportActions(lastResult);
         });
     }
 
@@ -2435,71 +2829,207 @@ document.addEventListener('DOMContentLoaded', () => {
         const existing = document.getElementById('ym-mobile-modal');
         if (existing) existing.remove();
 
-        let info = { lan_url: window.location.origin, tunnel_url: null };
+        let info = { lan_url: window.location.origin, tunnel_url: null, tailscale_url: null, cloudflared_installed: false };
         try {
             const r = await fetch('/network-info');
             if (r.ok) info = await r.json();
         } catch {}
 
-        const targetUrl = info.tunnel_url || info.lan_url;
-        const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(targetUrl)}`;
-
         const overlay = document.createElement('div');
         overlay.id = 'ym-mobile-modal';
         overlay.className = 'ym-modal-overlay';
-        overlay.innerHTML = `
-            <div class="ym-modal-card" style="text-align:center;">
-                <div class="ym-modal-header">
-                    <h3>📱 Вход с телефона</h3>
-                    <button class="ym-modal-close" id="ym-mobile-close">&times;</button>
+
+        const renderModalContent = () => {
+            const primaryUrl = info.tunnel_url || info.tailscale_url || info.lan_url;
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(primaryUrl)}`;
+
+            overlay.innerHTML = `
+                <div class="ym-modal-card" style="text-align:center;">
+                    <div class="ym-modal-header">
+                        <h3>📱 Слушать с телефона (дома и вне дома)</h3>
+                        <button class="ym-modal-close" id="ym-mobile-close" aria-label="Закрыть">&times;</button>
+                    </div>
+                    <p class="ym-modal-subtitle" style="text-align:center;">
+                        Наведите камеру телефона на QR-код или скопируйте ссылку. Поддерживается фоновое воспроизведение и переключение треков с заблокированного экрана!
+                    </p>
+                    <div class="ym-qr-box">
+                        <img id="ym-qr-img" src="${qrUrl}" alt="QR Code" style="width:176px;height:176px;border-radius:12px;background:#fff;padding:6px;margin:0 auto;display:block;">
+                        <div class="ym-qr-caption" id="ym-qr-caption">
+                            QR ведёт на: <b>${info.tunnel_url ? '🌍 Интернет-ссылку (вне дома)' : '🏠 Домашний Wi-Fi'}</b>
+                        </div>
+                    </div>
+
+                    <div style="margin:14px 0;text-align:left;">
+                        <label class="ym-label">🌍 Вне дома (мобильный интернет 4G/LTE/5G через HTTPS):</label>
+                        ${info.tunnel_url ? `
+                            <div class="ym-url-copy-row">
+                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.tunnel_url)}" id="ym-tunnel-input">
+                                <button type="button" class="toolbar-btn toolbar-btn--primary" id="ym-copy-tunnel">Копировать</button>
+                            </div>
+                        ` : `
+                            <div class="ym-tunnel-missing">
+                                <span>Туннель вне дома сейчас не запущен.</span>
+                                <button type="button" class="ym-btn-primary" id="ym-start-tunnel-btn" style="margin-top:8px;">
+                                    🌐 Включить доступ вне дома (HTTPS-туннель)
+                                </button>
+                                <div style="font-size:11px;color:#999;margin-top:6px;">
+                                    Или запустите сервер командой <code>./start_remote.sh</code>
+                                </div>
+                            </div>
+                        `}
+
+                        ${info.tailscale_url ? `
+                            <label class="ym-label" style="margin-top:12px;">🔒 Постоянный адрес Tailscale VPN:</label>
+                            <div class="ym-url-copy-row">
+                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.tailscale_url)}">
+                                <button type="button" class="toolbar-btn" id="ym-copy-ts">Копировать</button>
+                            </div>
+                        ` : ''}
+
+                        <label class="ym-label" style="margin-top:12px;">🏠 Дома по локальному Wi-Fi:</label>
+                        <div class="ym-url-copy-row">
+                            <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.lan_url)}" id="ym-lan-input">
+                            <button type="button" class="toolbar-btn" id="ym-copy-lan">Копировать</button>
+                        </div>
+                    </div>
+
+                    <div class="ym-pwa-tip">
+                        <b>💡 Как установить плеер на телефон как приложение:</b><br>
+                        • <b>iPhone (Safari):</b> нажмите «Поделиться» <i class="fas fa-arrow-up-from-bracket"></i> → <b>«На экран "Домой"»</b>.<br>
+                        • <b>Android (Chrome):</b> нажмите меню <b>⋮</b> → <b>«Установить приложение»</b>.
+                    </div>
                 </div>
-                <p style="font-size:13px;color:#bbb;margin-top:0;">
-                    Отсканируйте QR-код камерой телефона или откройте ссылку в мобильном браузере:
-                </p>
-                <img src="${qrUrl}" alt="QR Code" style="width:180px;height:180px;border-radius:12px;background:#fff;padding:8px;margin:8px auto;display:block;">
-                <div style="margin:12px 0;text-align:left;">
-                    <label style="font-size:12px;color:#aaa;">🏠 Дома по Wi-Fi:</label>
-                    <input type="text" class="ym-input" readonly value="${info.lan_url}" onclick="this.select()">
-                    <label style="font-size:12px;color:#aaa;">🌍 Вне дома (интернет-туннель HTTPS):</label>
-                    <input type="text" class="ym-input" readonly value="${info.tunnel_url || 'Запустите ./start_remote.sh для внешней ссылки'}" onclick="this.select()">
-                </div>
-                <p style="font-size:12px;color:#888;">
-                    💡 Совет: на телефоне в меню браузера нажмите <b>«Добавить на главный экран»</b> — плеер установится как приложение и будет играть при заблокированном экране.
-                </p>
-            </div>
-        `;
+            `;
+
+            overlay.querySelector('#ym-mobile-close').onclick = () => overlay.remove();
+            overlay.querySelector('#ym-copy-tunnel')?.addEventListener('click', () => {
+                navigator.clipboard?.writeText(info.tunnel_url);
+                showToast('✅ Интернет-ссылка для телефона скопирована!');
+            });
+            overlay.querySelector('#ym-copy-ts')?.addEventListener('click', () => {
+                navigator.clipboard?.writeText(info.tailscale_url);
+                showToast('✅ Ссылка Tailscale скопирована!');
+            });
+            overlay.querySelector('#ym-copy-lan')?.addEventListener('click', () => {
+                navigator.clipboard?.writeText(info.lan_url);
+                showToast('✅ Wi-Fi ссылка скопирована!');
+            });
+            overlay.querySelector('#ym-start-tunnel-btn')?.addEventListener('click', async (e) => {
+                const btn = e.currentTarget;
+                btn.disabled = true;
+                btn.textContent = '⏳ Запускаем HTTPS-туннель (5–10 сек)…';
+                try {
+                    const resp = await fetch('/network-info/start-tunnel', { method: 'POST' });
+                    const data = await resp.json();
+                    if (!resp.ok) throw new Error(data.detail || 'Не удалось запустить туннель');
+                    info.tunnel_url = data.tunnel_url;
+                    renderModalContent();
+                    showToast('🌐 Внешняя ссылка для телефона готова!');
+                } catch (err) {
+                    btn.disabled = false;
+                    btn.textContent = '🌐 Включить доступ вне дома (HTTPS-туннель)';
+                    showToast(`⚠️ ${err.message}`);
+                }
+            });
+        };
+
         document.body.appendChild(overlay);
-        overlay.querySelector('#ym-mobile-close').onclick = () => overlay.remove();
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
+        renderModalContent();
     }
 
     function mountSidebarExtensions() {
-        const sidebar = document.querySelector('.sidebar, aside, .left-sidebar, nav');
-        if (!sidebar || document.getElementById('ym-sidebar-extensions')) return;
+        const ext = document.getElementById('ym-sidebar-extensions');
+        if (!ext || ext.dataset.mounted === '1') return;
+        ext.dataset.mounted = '1';
 
-        const ext = document.createElement('div');
-        ext.id = 'ym-sidebar-extensions';
-        ext.className = 'sidebar-extra-section';
         ext.innerHTML = `
             <button type="button" class="sidebar-action-btn" id="btn-open-import">
                 <i class="fas fa-file-import"></i> <span>Импорт треков (1000+)</span>
             </button>
-            <button type="button" class="sidebar-action-btn" id="btn-open-mobile" style="background:rgba(10,132,255,0.14);color:#5ac8fa;">
-                <i class="fas fa-mobile-alt"></i> <span>Вход с телефона</span>
+            <button type="button" class="sidebar-action-btn sidebar-action-btn--phone" id="btn-open-mobile">
+                <i class="fas fa-mobile-screen-button"></i> <span>Вход с телефона</span>
             </button>
-            <div style="font-size:11px;font-weight:700;color:rgba(255,255,255,0.45);padding:8px 12px 4px;text-transform:uppercase;letter-spacing:0.06em;">
-                Мои плейлисты
+            <div class="sidebar-playlists-heading">
+                <span>Мои плейлисты</span>
+                <button type="button" class="sidebar-add-pl-btn" id="btn-sidebar-new-pl" title="Создать плейлист">+</button>
             </div>
             <div id="sidebar-playlists-list"></div>
         `;
-        sidebar.appendChild(ext);
 
-        ext.querySelector('#btn-open-import').addEventListener('click', openImportModal);
-        ext.querySelector('#btn-open-mobile').addEventListener('click', openMobileAccessModal);
+        ext.querySelector('#btn-open-import')?.addEventListener('click', () => openImportModal());
+        ext.querySelector('#btn-open-mobile')?.addEventListener('click', () => openMobileAccessModal());
+        ext.querySelector('#btn-sidebar-new-pl')?.addEventListener('click', async () => {
+            const name = prompt('Название нового плейлиста:', 'Мой плейлист');
+            if (!name || !name.trim()) return;
+            try {
+                const created = await fetchJson('/playlists', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify({ name: name.trim() })
+                });
+                await refreshSidebarPlaylists();
+                openPlaylistView(created);
+            } catch {
+                showToast('⚠️ Не удалось создать плейлист');
+            }
+        });
         refreshSidebarPlaylists();
     }
 
-    mountSidebarExtensions();
-    setTimeout(mountSidebarExtensions, 600);
+    document.getElementById('btn-mobile-import-top')?.addEventListener('click', () => openImportModal());
+    document.getElementById('btn-mobile-access-top')?.addEventListener('click', () => openMobileAccessModal());
 
+    // Разблокировка аудиоконтекста на мобильных браузерах (iOS Safari / Android Chrome) при первом касании
+    let mobileAudioUnlocked = false;
+    const unlockMobileAudio = () => {
+        if (mobileAudioUnlocked) return;
+        mobileAudioUnlocked = true;
+        audioPlayer.setAttribute('playsinline', '');
+        audioPlayer.setAttribute('webkit-playsinline', '');
+        document.removeEventListener('touchstart', unlockMobileAudio, true);
+        document.removeEventListener('click', unlockMobileAudio, true);
+    };
+    document.addEventListener('touchstart', unlockMobileAudio, true);
+    document.addEventListener('click', unlockMobileAudio, true);
+
+    // Расширенная поддержка MediaSession для перемотки с заблокированного экрана смартфона
+    if ('mediaSession' in navigator) {
+        try {
+            navigator.mediaSession.setActionHandler('seekto', (details) => {
+                if (details.fastSeek && 'fastSeek' in audioPlayer) {
+                    audioPlayer.fastSeek(details.seekTime);
+                } else {
+                    audioPlayer.currentTime = details.seekTime;
+                }
+            });
+            navigator.mediaSession.setActionHandler('seekbackward', (details) => {
+                const offset = details.seekOffset || 10;
+                audioPlayer.currentTime = Math.max(0, (audioPlayer.currentTime || 0) - offset);
+            });
+            navigator.mediaSession.setActionHandler('seekforward', (details) => {
+                const offset = details.seekOffset || 10;
+                audioPlayer.currentTime = Math.min(audioPlayer.duration || 0, (audioPlayer.currentTime || 0) + offset);
+            });
+        } catch {}
+
+        audioPlayer.addEventListener('timeupdate', () => {
+            if ('setPositionState' in navigator.mediaSession && audioPlayer.duration && isFinite(audioPlayer.duration)) {
+                try {
+                    navigator.mediaSession.setPositionState({
+                        duration: audioPlayer.duration,
+                        playbackRate: audioPlayer.playbackRate || 1,
+                        position: Math.min(audioPlayer.currentTime || 0, audioPlayer.duration)
+                    });
+                } catch {}
+            }
+        });
+    }
+
+    // Регистрация PWA Service Worker для установки на телефон
+    if ('serviceWorker' in navigator) {
+        navigator.serviceWorker.register('/sw.js').catch(() => {});
+    }
+
+    mountSidebarExtensions();
 });

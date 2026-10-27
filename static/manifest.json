@@ -1,14 +1,23 @@
 {
-  "name": "Music Wave Player",
-  "short_name": "MusicWave",
+  "name": "MusicStream — Моя Волна",
+  "short_name": "MusicStream",
+  "description": "Персональный музыкальный плеер с Моей Волной и импортом из Яндекс Музыки",
   "start_url": "/",
+  "scope": "/",
   "display": "standalone",
-  "background_color": "#0d0d0f",
-  "theme_color": "#ff453a",
+  "background_color": "#0e0d0c",
+  "theme_color": "#0e0d0c",
+  "orientation": "portrait-primary",
   "icons": [
     {
-      "src": "https://cdn-icons-png.flaticon.com/512/3844/3844724.png",
-      "sizes": "512x512",
+      "src": "/static/img/default-cover.svg",
+      "sizes": "any",
+      "type": "image/svg+xml",
+      "purpose": "any maskable"
+    },
+    {
+      "src": "/static/img/default-cover.png",
+      "sizes": "192x192",
       "type": "image/png"
     }
   ]
