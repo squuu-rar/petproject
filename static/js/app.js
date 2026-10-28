@@ -1,4 +1,5 @@
-import PlaybackQueue from './playback_queue.js';
+import PlaybackQueue from './playback_queue.js?v=wave-v3';
+import { ListeningTracker, uniqueTracks, WaveRevision, WaveRequests, playbackId } from './wave_feedback.js?v=wave-v3';
 
 document.addEventListener('DOMContentLoaded', () => {
     const DEFAULT_COVER = '/static/img/default-cover.svg';
@@ -57,7 +58,15 @@ document.addEventListener('DOMContentLoaded', () => {
     let queueMode = 'list';
     let queueListRef = null;
     let visibleTracks = [];
-    let isPrefetchingWave = false;
+    const waveRevision = new WaveRevision();
+    let feedbackSession = null;
+    let feedbackWrites = Promise.resolve(true);
+    let playbackAudible = false;
+    const waveRequests = new WaveRequests({
+        queue: playbackQueue, revision: waveRevision, mode: () => queueMode,
+        fetch: fetchWave, before: () => feedbackWrites,
+        status: message => setWaveStatus(message || WAVE_STATUS_IDLE)
+    });
     let autoSkipTimer = null;
     let searchDebounceTimer = null;
     let searchSeq = 0;
@@ -257,11 +266,25 @@ document.addEventListener('DOMContentLoaded', () => {
         return `t:${t.title}|${t.artist}`;
     }
 
-    function setImgWithFallback(img, src) {
+    function proxyCoverUrl(src, queryHint = '') {
+        if (!src) return DEFAULT_COVER;
+        const s = String(src).trim();
+        if (!s || s.startsWith('/') || s.startsWith('data:') || s.startsWith('blob:')) {
+            return s || DEFAULT_COVER;
+        }
+        if (/ytimg\.com|ggpht\.com|googleusercontent\.com|youtube\.com/i.test(s)) {
+            const params = new URLSearchParams({ url: s });
+            if (queryHint) params.set('q', queryHint);
+            return `/proxy/image?${params.toString()}`;
+        }
+        return s;
+    }
+
+    function setImgWithFallback(img, src, queryHint = '') {
         if (!img) return;
         delete img.dataset.fallback;
         img.referrerPolicy = 'no-referrer';
-        img.src = src || DEFAULT_COVER;
+        img.src = proxyCoverUrl(src, queryHint);
     }
 
     function bindImgFallback(img) {
@@ -292,23 +315,384 @@ document.addEventListener('DOMContentLoaded', () => {
         return fetchJson(`/search?q=${encodeURIComponent(query)}`);
     }
 
-    async function fetchWave(limit) {
-        const data = await fetchJson(`/wave?limit=${limit}`);
-        if (!Array.isArray(data)) throw new Error('Волна вернула не список');
-        return data;
+    // =========================================================================
+    // МОЯ ВОЛНА 2.0 (Алгоритмы в стиле Яндекс Музыки: Контекст, Ручные настройки,
+    // Цвета волны, Встряхивание смартфона и Офлайн-режим TinyML)
+    // =========================================================================
+    const WAVE_FILTER_DEFS = {
+        activity: {
+            title: 'Занятие',
+            icon: 'fa-briefcase',
+            options: [
+                { id: 'all', label: 'По контексту' },
+                { id: 'work', label: 'Работа / Фокус' },
+                { id: 'commute', label: 'В дороге' },
+                { id: 'workout', label: 'Тренировка' },
+                { id: 'relax', label: 'Отдых' }
+            ]
+        },
+        mood: {
+            title: 'Настроение',
+            icon: 'fa-masks-theater',
+            options: [
+                { id: 'all', label: 'Авто' },
+                { id: 'energetic', label: 'Бодрое' },
+                { id: 'calm', label: 'Спокойное' },
+                { id: 'sad', label: 'Грустное' },
+                { id: 'dark', label: 'Тёмное' }
+            ]
+        },
+        character: {
+            title: 'Характер',
+            icon: 'fa-compass',
+            options: [
+                { id: 'all', label: 'Баланс' },
+                { id: 'discovery', label: 'Незнакомое' },
+                { id: 'popular', label: 'Популярное' },
+                { id: 'favorite', label: 'Любимое' }
+            ]
+        },
+        language: {
+            title: 'Язык',
+            icon: 'fa-globe',
+            options: [
+                { id: 'all', label: 'Любой' },
+                { id: 'ru', label: 'Русский' },
+                { id: 'foreign', label: 'Иностранный' },
+                { id: 'instrumental', label: 'Без слов' }
+            ]
+        }
+    };
+
+    const VIBE_META = {
+        calm: { label: 'Спокойный поток', icon: 'fa-water' },
+        energy: { label: 'Заряд энергии', icon: 'fa-fire-flame-curved' },
+        joy: { label: 'Светлый настрой', icon: 'fa-sun' },
+        melancholy: { label: 'Глубокая атмосфера', icon: 'fa-moon' }
+    };
+
+    let waveSettings = {
+        activity: 'all',
+        mood: 'all',
+        character: 'all',
+        language: 'all',
+        offline: false
+    };
+    try {
+        const savedWave = JSON.parse(localStorage.getItem('player:waveSettings') || 'null');
+        if (savedWave && typeof savedWave === 'object') {
+            waveSettings = { ...waveSettings, ...savedWave };
+        }
+    } catch {}
+
+    let waveDrawerOpen = false;
+    let waveContextData = null;
+    let currentWaveVibe = 'calm';
+    let sessionSkipStreak = 0;
+    let lastShakeTimestamp = 0;
+    let motionPermissionRequested = false;
+
+    function saveWaveSettings() {
+        try { localStorage.setItem('player:waveSettings', JSON.stringify(waveSettings)); } catch {}
+    }
+
+    function detectClientDeviceType() {
+        const ua = (navigator.userAgent || '').toLowerCase();
+        if (/mobile|android|iphone|ipad|ipod/.test(ua) || window.innerWidth <= 820) {
+            return 'mobile';
+        }
+        return 'desktop';
+    }
+
+    function buildClientFallbackContext() {
+        const now = new Date();
+        const hr = now.getHours();
+        const wd = now.getDay(); // 0 is Sun, 6 is Sat
+        const isWeekend = (wd === 0 || wd === 6);
+        const device = detectClientDeviceType();
+        let timeLabel = 'Ночь';
+        if (hr >= 6 && hr < 12) timeLabel = 'Утро';
+        else if (hr >= 12 && hr < 18) timeLabel = 'День';
+        else if (hr >= 18 && hr < 23) timeLabel = 'Вечер';
+
+        const dayStr = isWeekend ? 'Выходной' : 'Будни';
+        const devStr = device === 'mobile' ? 'Смартфон' : 'Ноутбук/ПК';
+        let hint = `${dayStr} · ${timeLabel} · ${devStr}`;
+        if (!isWeekend && device === 'desktop' && hr >= 9 && hr < 18) {
+            hint += ' — спокойный поток для работы';
+        } else if (device === 'mobile' && (hr >= 7 && hr <= 10 || hr >= 17 && hr <= 20)) {
+            hint += ' — динамичный поток в дорогу';
+        }
+        return {
+            time_label: timeLabel,
+            is_weekend: isWeekend,
+            device,
+            context_hint: hint
+        };
+    }
+
+    async function refreshWaveContext() {
+        const dev = detectClientDeviceType();
+        try {
+            waveContextData = await fetchJson(`/wave/context?device=${dev}`);
+        } catch {
+            waveContextData = buildClientFallbackContext();
+        }
+        updateWaveContextBadge();
+        return waveContextData;
+    }
+
+    function computeTrackVibe(track) {
+        if (waveSettings.mood === 'energetic' || waveSettings.activity === 'workout') return 'energy';
+        if (waveSettings.mood === 'calm' || waveSettings.activity === 'work' || waveSettings.activity === 'relax') return 'calm';
+        if (waveSettings.mood === 'sad' || waveSettings.mood === 'dark') return 'melancholy';
+
+        if (!track) return currentWaveVibe || 'calm';
+        const blob = `${track.title || ''} ${track.artist || ''} ${track.genre || ''} ${track.album || ''}`.toLowerCase();
+
+        if (/phonk|metal|punk|hard|electronic|dance|drum|workout|drive|party|рок|панк|драйв|рейв/.test(blob)) {
+            return 'energy';
+        }
+        if (/ambient|chill|lofi|lo-fi|acoustic|piano|jazz|sleep|calm|focus|инструментал|эмбиент|спокойн|уют/.test(blob)) {
+            return 'calm';
+        }
+        if (/post-punk|doomer|sad|dark|melanchol|cold|пост-панк|груст|ночь|тоска|осень|дождь|сплин|кино|агата кристи|наутилус/.test(blob)) {
+            return 'melancholy';
+        }
+        if (/pop|funk|disco|indie|summer|happy|инди|фанк|диско|лето|танц/.test(blob)) {
+            return 'joy';
+        }
+
+        const dur = Number(track.duration) || 0;
+        if (dur > 0 && dur < 165) return 'energy';
+        if (dur > 275) return 'melancholy';
+        return track.liked ? 'joy' : 'calm';
+    }
+
+    function applyWaveVibe(vibe) {
+        const target = VIBE_META[vibe] ? vibe : 'calm';
+        currentWaveVibe = target;
+        if (waveEls && waveEls.screen) {
+            waveEls.screen.dataset.vibe = target;
+        }
+        const idleScreen = tracklist ? tracklist.querySelector('.wave-screen') : null;
+        if (idleScreen) {
+            idleScreen.dataset.vibe = target;
+        }
+        const badgeEl = document.getElementById('wave-vibe-badge');
+        if (badgeEl) {
+            const meta = VIBE_META[target];
+            badgeEl.innerHTML = `<i class="fas ${meta.icon}"></i><span>${meta.label}</span>`;
+        }
+    }
+
+    function getActiveWaveFilterSummary() {
+        const parts = [];
+        for (const [key, def] of Object.entries(WAVE_FILTER_DEFS)) {
+            const val = waveSettings[key];
+            if (val && val !== 'all') {
+                const opt = def.options.find(o => o.id === val);
+                if (opt) parts.push({ key, label: opt.label });
+            }
+        }
+        if (waveSettings.offline || !navigator.onLine) {
+            parts.push({ key: 'offline', label: '⚡ Офлайн (TinyML)' });
+        }
+        return parts;
+    }
+
+    function renderWaveSettingsToolbarHtml() {
+        const ctx = waveContextData || buildClientFallbackContext();
+        const vibeMeta = VIBE_META[currentWaveVibe] || VIBE_META.calm;
+        const activeFilters = getActiveWaveFilterSummary();
+        const isOfflineActive = Boolean(waveSettings.offline || !navigator.onLine);
+
+        const groupsHtml = Object.entries(WAVE_FILTER_DEFS).map(([groupKey, def]) => {
+            const curVal = waveSettings[groupKey] || 'all';
+            const chips = def.options.map(opt => `
+                <button type="button" class="wave-chip ${curVal === opt.id ? 'active' : ''}"
+                        data-wave-group="${groupKey}" data-wave-val="${opt.id}">
+                    ${escapeHtml(opt.label)}
+                </button>
+            `).join('');
+            return `
+                <div class="wave-filter-group">
+                    <span class="wave-filter-label"><i class="fas ${def.icon}"></i>${escapeHtml(def.title)}</span>
+                    <div class="wave-filter-chips">${chips}</div>
+                </div>
+            `;
+        }).join('');
+
+        const activeBadgesHtml = activeFilters.map(item => `
+            <span class="wave-active-pill" data-reset-group="${item.key}" title="Нажмите, чтобы сбросить фильтр">
+                ${escapeHtml(item.label)} <i class="fas fa-xmark"></i>
+            </span>
+        `).join('');
+
+        return `
+            <div class="wave-Personal-bar" id="wave-personal-bar">
+                <div class="wave-context-row">
+                    <span class="wave-context-pill" id="wave-context-pill" title="Учёт контекста: день недели, время суток и устройство">
+                        <i class="fas fa-sparkles"></i>
+                        <span id="wave-context-text">${escapeHtml(ctx.context_hint)}</span>
+                    </span>
+                    <span class="wave-vibe-badge" id="wave-vibe-badge" title="Цвет волны подстраивается под характер треков">
+                        <i class="fas ${vibeMeta.icon}"></i>
+                        <span>${escapeHtml(vibeMeta.label)}</span>
+                    </span>
+                    <button type="button" class="wave-settings-toggle ${waveDrawerOpen ? 'active' : ''}" id="wave-settings-toggle">
+                        <i class="fas fa-sliders"></i>
+                        <span>Настроить волну</span>
+                        ${activeFilters.length > 0 ? `<span class="wave-settings-count">${activeFilters.length}</span>` : ''}
+                    </button>
+                </div>
+                ${activeFilters.length > 0 ? `<div class="wave-active-row">${activeBadgesHtml}</div>` : ''}
+                <div class="wave-settings-drawer" id="wave-settings-drawer" ${waveDrawerOpen ? '' : 'hidden'}>
+                    ${groupsHtml}
+                    <div class="wave-filter-group wave-filter-group--footer">
+                        <button type="button" class="wave-chip wave-chip--offline ${isOfflineActive ? 'active' : ''}" id="wave-offline-toggle"
+                                title="Офлайн-режим (TinyML): подбор музыки без интернета по кэшу и локальной медиатеке">
+                            <i class="fas fa-bolt"></i>
+                            <span>Офлайн-режим (TinyML)</span>
+                        </button>
+                        <button type="button" class="ghost-btn wave-reset-btn" id="wave-reset-filters">
+                            Сбросить настройки
+                        </button>
+                    </div>
+                </div>
+            </div>
+        `;
+    }
+
+    function updateWaveContextBadge() {
+        const textEl = document.getElementById('wave-context-text');
+        if (textEl) {
+            const ctx = waveContextData || buildClientFallbackContext();
+            textEl.textContent = ctx.context_hint;
+        }
+    }
+
+    function bindWaveSettingsEvents() {
+        const bar = document.getElementById('wave-personal-bar');
+        if (!bar) return;
+
+        const toggleBtn = document.getElementById('wave-settings-toggle');
+        const drawer = document.getElementById('wave-settings-drawer');
+        if (toggleBtn && drawer) {
+            toggleBtn.addEventListener('click', (e) => {
+                e.stopPropagation();
+                requestMotionPermissionIfNeeded();
+                waveDrawerOpen = !waveDrawerOpen;
+                drawer.hidden = !waveDrawerOpen;
+                toggleBtn.classList.toggle('active', waveDrawerOpen);
+            });
+        }
+
+        bar.querySelectorAll('[data-wave-group]').forEach(btn => {
+            btn.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const group = btn.dataset.waveGroup;
+                const val = btn.dataset.waveVal;
+                if (!group || !val) return;
+                waveSettings[group] = (waveSettings[group] === val && val !== 'all') ? 'all' : val;
+                saveWaveSettings();
+                applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
+                await reloadWaveWithCurrentSettings();
+            });
+        });
+
+        bar.querySelectorAll('[data-reset-group]').forEach(pill => {
+            pill.addEventListener('click', async (e) => {
+                e.stopPropagation();
+                const key = pill.dataset.resetGroup;
+                if (key === 'offline') waveSettings.offline = false;
+                else if (key && waveSettings[key]) waveSettings[key] = 'all';
+                saveWaveSettings();
+                applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
+                await reloadWaveWithCurrentSettings();
+            });
+        });
+
+        document.getElementById('wave-offline-toggle')?.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            waveSettings.offline = !waveSettings.offline;
+            saveWaveSettings();
+            showToast(waveSettings.offline
+                ? '⚡ Включён офлайн-режим (TinyML): играем из кэша и медиатеки'
+                : '🌐 Онлайн-поток «Моей волны» активен');
+            await reloadWaveWithCurrentSettings();
+        });
+
+        document.getElementById('wave-reset-filters')?.addEventListener('click', async (e) => {
+            e.stopPropagation();
+            waveSettings = { activity: 'all', mood: 'all', character: 'all', language: 'all', offline: false };
+            saveWaveSettings();
+            applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
+            await reloadWaveWithCurrentSettings();
+        });
+    }
+
+    async function fetchWave(limit, extra = {}) {
+        const excluded = playbackQueue.queue.slice(-2000).map(t => ({
+            id: Number(t.id) > 0 ? Number(t.id) : null,
+            external_id: t.external_id || null, artist: t.artist || null, title: t.title || null
+        }));
+        const payload = { ...waveSettings, limit: limit || 20, device: detectClientDeviceType(),
+            shake: Boolean(extra.shake), offline: Boolean(extra.offline ?? (waveSettings.offline || !navigator.onLine)),
+            exclude_tracks: excluded };
+        const request = async () => {
+            const data = await fetchJson('/wave', {
+                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
+            });
+            if (!Array.isArray(data)) throw new Error('Волна вернула не список');
+            return uniqueTracks(data, playbackQueue.queue);
+        };
+        try {
+            return await request();
+        } catch (error) {
+            if (!payload.offline) {
+                payload.offline = true;
+                return await request();
+            }
+            throw error;
+        }
     }
 
     function toggleLike(trackId, isLiked) {
-        return fetchJson(`/tracks/${trackId}/like?liked=${!isLiked}`, { method: 'POST' });
+        const params = new URLSearchParams({ liked: String(!isLiked) });
+        if (feedbackSession?.track.id === trackId) params.set('playback_id', feedbackSession.id);
+        return fetchJson(`/tracks/${trackId}/like?${params}`, { method: 'POST' });
     }
 
-    function sendHistory(trackId, event, elapsedSeconds = 0) {
-        if (!trackId || trackId === -1 || trackId === '-1') return;
-        fetch('/history', {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify({ track_id: trackId, event, elapsed_seconds: elapsedSeconds })
-        }).catch(() => {});
+    function sampleListening() {
+        if (feedbackSession && !feedbackSession.done) {
+            feedbackSession.tracker.sample(audioPlayer.currentTime || 0, performance.now(),
+                playbackAudible && !audioPlayer.seeking, audioPlayer.playbackRate || 1);
+        }
+    }
+
+    function sendHistory(trackId, event, elapsedSeconds = 0, session = feedbackSession) {
+        if (!trackId || Number(trackId) < 1) return Promise.resolve(false);
+        const duration = Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0
+            ? audioPlayer.duration : session?.track.duration;
+        const payload = { track_id: Number(trackId), event, elapsed_seconds: elapsedSeconds,
+            duration_seconds: duration > 0 ? duration : null,
+            playback_id: session?.id || null, context: session?.context || 'list',
+            is_discovery: Boolean(session?.track.is_discovery),
+            recommendation_version: session?.track.recommendation_version || null };
+        feedbackWrites = feedbackWrites.then(() => fetchJson('/history', {
+            method: 'POST', headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(payload), keepalive: true
+        })).then(() => true).catch(error => { console.warn('История не сохранена:', error); return false; });
+        return feedbackWrites;
+    }
+
+    function finishFeedback(event = 'stop') {
+        const session = feedbackSession;
+        if (!session || session.done) return feedbackWrites;
+        sampleListening();
+        session.done = true;
+        return sendHistory(session.track.id, event, session.tracker.seconds, session);
     }
 
     const registering = new WeakMap();
@@ -466,6 +850,7 @@ document.addEventListener('DOMContentLoaded', () => {
         try {
             const wasLiked = Boolean(track.liked);
             await ensureTrackId(track);
+            await feedbackWrites;
             await toggleLike(track.id, wasLiked);
             track.liked = !wasLiked;
             if (currentlyPlayingTrack && currentlyPlayingTrack !== track && isSameTrack(currentlyPlayingTrack, track)) {
@@ -475,6 +860,11 @@ document.addEventListener('DOMContentLoaded', () => {
                 if (row._track && row._track !== track && isSameTrack(row._track, track)) row._track.liked = track.liked;
             });
             syncLikeUI();
+            if (queueMode === 'wave' && track.liked) {
+                setWaveStatus('♥ Учли лайк — подбираем больше близких по духу треков');
+                applyWaveVibe(computeTrackVibe(track));
+                refreshUpcomingWaveOnSkipStreak(false);
+            }
         } catch (err) {
             console.error('Ошибка лайка:', err);
             showToast('⚠️ Не удалось изменить «Нравится»');
@@ -501,8 +891,9 @@ document.addEventListener('DOMContentLoaded', () => {
         waveEls = null;
         if (viewTitle) viewTitle.textContent = '';
         if (viewMeta) viewMeta.textContent = '';
+        const initVibe = computeTrackVibe(currentlyPlayingTrack);
         tracklist.innerHTML = `
-            <div class="wave-screen is-idle">
+            <div class="wave-screen is-idle" data-vibe="${initVibe}">
                 <div class="wave-grid"></div>
                 <div class="deck">
                     <div class="vinyl-wrap">
@@ -512,27 +903,43 @@ document.addEventListener('DOMContentLoaded', () => {
                         </div>
                     </div>
                     <div class="deck-info">
-                        <p class="eyebrow"><span class="eyebrow-dot"></span>Бесконечный поток</p>
+                        <p class="eyebrow"><span class="eyebrow-dot"></span>Бесконечный умный поток</p>
                         <h2 class="deck-title deck-title--idle">Моя волна</h2>
-                        <p class="deck-note">${loading ? 'Изучаю звучание…' : 'Музыка, которая сама подстраивается под ваши лайки и пропуски.'}</p>
+                        <p class="deck-note">${loading
+                            ? 'Анализирую историю, контекст и выбранные настройки…'
+                            : 'Анализирует прослушивания до конца, скипы и лайки, учитывает время суток и устройство, меняет оттенок под характер треков и работает даже офлайн (TinyML).'}</p>
+                        ${renderWaveSettingsToolbarHtml()}
                         <div class="deck-keys">
                             <button id="btn-wave-start" class="key key--primary key--start" title="Включить волну" ${loading ? 'disabled' : ''}>
                                 ${loading
                                     ? '<i class="fas fa-spinner fa-spin"></i>'
-                                    : '<i class="fas fa-play"></i><span>Запустить</span>'}
+                                    : '<i class="fas fa-play"></i><span>Запустить поток</span>'}
+                            </button>
+                            <button id="btn-wave-idle-shake" class="key" title="Встряхнуть Мою волну — резко сменить вектор рекомендаций" ${loading ? 'disabled' : ''}>
+                                <i class="fas fa-shuffle"></i><span>Встряхнуть</span>
                             </button>
                         </div>
                     </div>
                 </div>
             </div>
         `;
-        document.getElementById('btn-wave-start')?.addEventListener('click', initWavePlayback);
+        bindWaveSettingsEvents();
+        refreshWaveContext();
+        document.getElementById('btn-wave-start')?.addEventListener('click', () => {
+            requestMotionPermissionIfNeeded();
+            initWavePlayback({ shake: false });
+        });
+        document.getElementById('btn-wave-idle-shake')?.addEventListener('click', () => {
+            requestMotionPermissionIfNeeded();
+            shakeWavePlayback();
+        });
     }
 
     function mountWaveScreen() {
         if (waveEls && waveEls.screen.isConnected) return;
+        const initVibe = computeTrackVibe(currentlyPlayingTrack);
         tracklist.innerHTML = `
-            <div class="wave-screen">
+            <div class="wave-screen" data-vibe="${initVibe}">
                 <div class="wave-grid"></div>
                 <div class="deck">
                     <div class="vinyl-wrap">
@@ -551,6 +958,8 @@ document.addEventListener('DOMContentLoaded', () => {
                         <h2 class="deck-title" id="wave-title"></h2>
                         <p class="deck-artist clickable-artist" id="wave-artist" tabindex="0" role="button" title="Открыть карточку исполнителя"></p>
                         <p class="deck-meta" id="wave-meta"></p>
+
+                        ${renderWaveSettingsToolbarHtml()}
 
                         <div class="scrub-row">
                             <span class="progress-time" id="wave-time-current">0:00</span>
@@ -575,7 +984,7 @@ document.addEventListener('DOMContentLoaded', () => {
                                     <span class="wave-volume-val" id="wave-volume-val">70%</span>
                                 </div>
                             </div>
-                            <button id="wave-dislike-btn" class="key" title="Не нравится — пропустить"><i class="fas fa-ban"></i><span>Не моё</span></button>
+                            <button id="wave-dislike-btn" class="key" title="Не нравится — пропустить и перестроить поток"><i class="fas fa-ban"></i><span>Не моё</span></button>
                             <button id="wave-like-btn" class="key" title="Нравится"><i class="far fa-heart"></i><span>В любимое</span></button>
                             <button id="wave-lyrics-btn" class="key key--icon" title="Текст песни (караоке)" aria-label="Текст песни"><i class="fas fa-microphone-lines"></i></button>
                             <button id="wave-copy-btn" class="key key--icon" title="Скопировать «Артист — Название»" aria-label="Скопировать название"><i class="far fa-copy"></i></button>
@@ -583,7 +992,9 @@ document.addEventListener('DOMContentLoaded', () => {
 
                         <div class="deck-foot">
                             <p class="deck-status"><i class="fas fa-wand-magic-sparkles"></i><span id="wave-status-text">${WAVE_STATUS_IDLE}</span></p>
-                            <button id="wave-shake-btn" class="ghost-btn">↻ Перемешать поток</button>
+                            <button id="wave-shake-btn" class="ghost-btn wave-shake-btn" title="Нажмите или потрясите смартфон, чтобы резко сменить направление потока">
+                                <i class="fas fa-mobile-screen-button"></i><span>Встряхнуть волну</span>
+                            </button>
                         </div>
                     </div>
                 </div>
@@ -615,9 +1026,17 @@ document.addEventListener('DOMContentLoaded', () => {
 
         bindImgFallback(waveEls.cover);
         bindSeek(waveEls.progressTrack);
+        bindWaveSettingsEvents();
+        refreshWaveContext();
 
-        $('wave-cover-btn').addEventListener('click', togglePlay);
-        waveEls.play.addEventListener('click', togglePlay);
+        $('wave-cover-btn').addEventListener('click', () => {
+            requestMotionPermissionIfNeeded();
+            togglePlay();
+        });
+        waveEls.play.addEventListener('click', () => {
+            requestMotionPermissionIfNeeded();
+            togglePlay();
+        });
         $('wave-next-btn').addEventListener('click', () => nextTrack(true));
         $('wave-prev-btn').addEventListener('click', prevTrack);
         waveEls.mute.addEventListener('click', toggleMute);
@@ -641,14 +1060,33 @@ document.addEventListener('DOMContentLoaded', () => {
             }
         });
         waveEls.like.addEventListener('click', () => applyLike(currentlyPlayingTrack));
-        $('wave-dislike-btn').addEventListener('click', () => {
-            if (currentlyPlayingTrack) sendHistory(currentlyPlayingTrack.id, 'skip', 1.0);
-            nextTrack(false);
+        $('wave-dislike-btn').addEventListener('click', async () => {
+            const token = playToken;
+            const saved = await finishFeedback('dislike');
+            if (token !== playToken) return;
+            sessionSkipStreak += 1;
+            if (saved) await refreshUpcomingWaveOnSkipStreak(true);
+            if (token === playToken) nextTrack(false);
         });
-        $('wave-shake-btn').addEventListener('click', initWavePlayback);
+        $('wave-shake-btn').addEventListener('click', () => {
+            requestMotionPermissionIfNeeded();
+            shakeWavePlayback();
+        });
 
         syncVolumeUI();
         syncLyricsButtonsState();
+    }
+
+    function refreshWaveToolbarDOM() {
+        const oldBar = document.getElementById('wave-personal-bar');
+        if (!oldBar) return;
+        const tpl = document.createElement('div');
+        tpl.innerHTML = renderWaveSettingsToolbarHtml().trim();
+        const newBar = tpl.firstElementChild;
+        if (newBar) {
+            oldBar.replaceWith(newBar);
+            bindWaveSettingsEvents();
+        }
     }
 
     function updateWaveScreen() {
@@ -666,6 +1104,9 @@ document.addEventListener('DOMContentLoaded', () => {
         waveEls.artist.textContent = t.artist || 'Неизвестный исполнитель';
         waveEls.meta.textContent = [t.album, t.year].filter(Boolean).join(' · ');
         waveEls.counter.textContent = '№ ' + String(Math.max(playbackQueue.index, 0) + 1).padStart(3, '0');
+
+        const vibe = computeTrackVibe(t);
+        applyWaveVibe(vibe);
 
         if (changed) {
             setImgWithFallback(waveEls.cover, t.cover_path || DEFAULT_COVER);
@@ -694,11 +1135,37 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function initWavePlayback() {
-        if (currentView === 'wave') renderWaveIdle({ loading: true });
-        setWaveStatus('Изучаю звучание…');
+    async function reloadWaveWithCurrentSettings() {
+        const revision = waveRevision.invalidate();
+        refreshWaveToolbarDOM();
+        if (queueMode === 'wave' && currentlyPlayingTrack) {
+            setWaveStatus('Перестраиваю поток под выбранные настройки…');
+            try {
+                const tracks = await fetchWave(20);
+                if (!waveRevision.accepts(revision, queueMode)) return;
+                if (tracks.length > 0) {
+                    playbackQueue.setQueue(tracks);
+                    await playTrack(0, { force: true });
+                    setWaveStatus('Поток обновлён под ваши фильтры');
+                }
+            } catch (e) {
+                console.error('Ошибка обновления фильтров волны:', e);
+                setWaveStatus(WAVE_STATUS_IDLE);
+            }
+        }
+    }
+
+    function refreshUpcomingWaveOnSkipStreak(shake = true) {
+        return waveRequests.refresh(shake).then(() => { sessionSkipStreak = 0; });
+    }
+
+    async function initWavePlayback({ shake = false } = {}) {
+        const revision = waveRevision.invalidate();
+        if (currentView === 'wave' && !currentlyPlayingTrack) renderWaveIdle({ loading: true });
+        setWaveStatus(shake ? 'Встряхиваем Мою волну — ищем свежий вектор…' : 'Изучаю звучание и контекст…');
         try {
-            const tracks = await fetchWave(20);
+            const tracks = await fetchWave(20, { shake });
+            if (revision !== waveRevision.value) return;
             if (tracks.length === 0) {
                 showToast('Волна пока пуста — добавьте музыку или лайки');
                 if (currentView === 'wave') renderWaveIdle();
@@ -706,9 +1173,13 @@ document.addEventListener('DOMContentLoaded', () => {
             }
             queueMode = 'wave';
             queueListRef = null;
+            sessionSkipStreak = 0;
             playbackQueue.setQueue(tracks);
             await playTrack(0, { force: true });
             if (currentView === 'wave') renderWaveView();
+            if (shake) {
+                setWaveStatus('Поток перестроен — свежее направление рекомендаций');
+            }
         } catch (e) {
             console.error('Ошибка запуска волны:', e);
             showToast('⚠️ Не удалось загрузить волну');
@@ -717,9 +1188,81 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    async function shakeWavePlayback() {
+        const now = Date.now();
+        if (now - lastShakeTimestamp < 1800) return;
+        lastShakeTimestamp = now;
+
+        const screenEl = tracklist ? tracklist.querySelector('.wave-screen') : null;
+        if (screenEl) {
+            screenEl.classList.remove('is-shaking');
+            void screenEl.offsetWidth;
+            screenEl.classList.add('is-shaking');
+            setTimeout(() => screenEl.classList.remove('is-shaking'), 750);
+        }
+
+        const vibes = Object.keys(VIBE_META);
+        const nextVibe = vibes[(vibes.indexOf(currentWaveVibe) + 1) % vibes.length];
+        applyWaveVibe(nextVibe);
+        showToast('📳 Встряхнули Мою волну — меняем вектор рекомендаций!');
+        await initWavePlayback({ shake: true });
+    }
+
+    function requestMotionPermissionIfNeeded() {
+        if (motionPermissionRequested) return;
+        motionPermissionRequested = true;
+        if (typeof DeviceMotionEvent !== 'undefined' && typeof DeviceMotionEvent.requestPermission === 'function') {
+            DeviceMotionEvent.requestPermission().catch(() => {});
+        }
+    }
+
+    // Физическое встряхивание смартфона (Accelerometer / DeviceMotion API)
+    (function setupShakeGestureListener() {
+        let lastX = null, lastY = null, lastZ = null;
+        let lastSampleTime = 0;
+        let shakeHits = 0;
+
+        window.addEventListener('devicemotion', (event) => {
+            if (currentView !== 'wave' && queueMode !== 'wave') return;
+            const acc = event.accelerationIncludingGravity || event.acceleration;
+            if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
+
+            const now = Date.now();
+            if (now - lastSampleTime < 90) return;
+            const dt = now - lastSampleTime;
+            lastSampleTime = now;
+
+            if (lastX !== null) {
+                const delta = Math.abs(acc.x - lastX) + Math.abs(acc.y - lastY) + Math.abs(acc.z - lastZ);
+                if (delta > 22) {
+                    shakeHits += 1;
+                    if (shakeHits >= 2) {
+                        shakeHits = 0;
+                        shakeWavePlayback();
+                    }
+                } else if (dt > 500) {
+                    shakeHits = 0;
+                }
+            }
+            lastX = acc.x;
+            lastY = acc.y;
+            lastZ = acc.z;
+        }, { passive: true });
+
+        window.addEventListener('offline', () => {
+            refreshWaveToolbarDOM();
+            if (queueMode === 'wave') {
+                setWaveStatus('⚡ Нет сети — работает офлайн-режим (TinyML)');
+            }
+        });
+        window.addEventListener('online', () => {
+            refreshWaveToolbarDOM();
+        });
+    })();
+
     async function prefetchNextQueueTracks() {
         const startIdx = playbackQueue.index + 1;
-        const candidates = playbackQueue.queue.slice(startIdx, startIdx + 2);
+        const candidates = playbackQueue.queue.slice(startIdx, startIdx + 3);
         if (!candidates.length) return;
         const ids = [];
         for (const t of candidates) {
@@ -738,22 +1281,8 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    async function prefetchWaveIfNeeded() {
-        if (queueMode !== 'wave' || isPrefetchingWave) return;
-        if (playbackQueue.length - playbackQueue.index > 3) return;
-        isPrefetchingWave = true;
-        setWaveStatus('Подбираю следующие треки…');
-        try {
-            const extra = await fetchWave(12);
-            const known = new Set(playbackQueue.queue.map(trackKey));
-            const fresh = extra.filter(t => !known.has(trackKey(t)));
-            playbackQueue.appendTracks(fresh.length ? fresh : extra);
-        } catch (err) {
-            console.error('Ошибка префетча волны:', err);
-        } finally {
-            isPrefetchingWave = false;
-            setWaveStatus(WAVE_STATUS_IDLE);
-        }
+    function prefetchWaveIfNeeded() {
+        return waveRequests.prefetch();
     }
 
     function getSearchHistory() {
@@ -1239,6 +1768,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function playFromList(list, index) {
         if (!Array.isArray(list) || index < 0 || index >= list.length) return;
         if (queueMode !== 'list' || queueListRef !== list) {
+            waveRevision.invalidate();
             queueMode = 'list';
             queueListRef = list;
             playbackQueue.setQueue(list);
@@ -1264,6 +1794,9 @@ document.addEventListener('DOMContentLoaded', () => {
             return;
         }
 
+        finishFeedback('stop');
+        playbackAudible = false;
+        feedbackSession = null;
         const token = ++playToken;
         playbackQueue.playAt(index);
         currentlyPlayingTrack = track;
@@ -1282,6 +1815,8 @@ document.addEventListener('DOMContentLoaded', () => {
             setHeartIcon(btnLikePlayer, track.liked);
         }
 
+        feedbackSession = { id: playbackId(), track, context: queueMode,
+            tracker: new ListeningTracker(), done: false };
         audioPlayer.src = `/stream/${track.id}`;
         audioPlayer.play().catch(e => {
             console.warn('Play interrupted or pending:', e);
@@ -1320,24 +1855,31 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function nextTrack(isSkip = false) {
+    async function nextTrack(isSkip = false) {
         clearTimeout(autoSkipTimer);
+        const token = playToken;
         if (isSkip && currentlyPlayingTrack) {
-            const elapsed = audioPlayer.currentTime || 0;
-            if (elapsed < 15) sendHistory(currentlyPlayingTrack.id, 'skip', elapsed);
+            sampleListening();
+            const elapsed = feedbackSession?.tracker.seconds || 0;
+            const duration = audioPlayer.duration || currentlyPlayingTrack.duration || 0;
+            const early = elapsed < 15 || (duration > 0 && elapsed / duration < 0.25);
+            const saved = await finishFeedback('skip');
+            if (token !== playToken) return;
+            sessionSkipStreak = early ? sessionSkipStreak + 1 : 0;
+            if (queueMode === 'wave' && sessionSkipStreak >= 2 && saved) {
+                await refreshUpcomingWaveOnSkipStreak(true);
+                if (token !== playToken) return;
+            }
         }
         if (playbackQueue.next()) {
             playTrack(playbackQueue.index);
             return;
         }
         if (queueMode === 'wave') {
-            prefetchWaveIfNeeded().then(() => {
-                if (playbackQueue.next()) {
-                    playTrack(playbackQueue.index);
-                } else {
-                    showToast('Волна пока не смогла подобрать продолжение');
-                }
-            });
+            await prefetchWaveIfNeeded();
+            if (token !== playToken || queueMode !== 'wave') return;
+            if (playbackQueue.next()) playTrack(playbackQueue.index);
+            else showToast('Волна пока не смогла подобрать продолжение');
         }
     }
 
@@ -1349,11 +1891,25 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     audioPlayer.addEventListener('play', () => syncPlayPauseUI(true));
-    audioPlayer.addEventListener('pause', () => syncPlayPauseUI(false));
-    audioPlayer.addEventListener('playing', () => { consecutiveErrors = 0; });
+    audioPlayer.addEventListener('pause', () => { sampleListening(); playbackAudible = false; syncPlayPauseUI(false); });
+    audioPlayer.addEventListener('playing', () => {
+        consecutiveErrors = 0;
+        playbackAudible = true;
+        feedbackSession?.tracker.sample(audioPlayer.currentTime || 0, performance.now(), true);
+    });
+    audioPlayer.addEventListener('waiting', () => { sampleListening(); playbackAudible = false; });
+    audioPlayer.addEventListener('seeking', () => {
+        feedbackSession?.tracker.sample(audioPlayer.currentTime || 0, performance.now(), false);
+    });
+    audioPlayer.addEventListener('seeked', () => {
+        feedbackSession?.tracker.sample(audioPlayer.currentTime || 0, performance.now(), playbackAudible);
+    });
+    window.addEventListener('pagehide', () => finishFeedback('stop'));
 
     audioPlayer.addEventListener('error', (e) => {
         console.error('Ошибка аудиопотока:', e, audioPlayer.error);
+        finishFeedback('error');
+        playbackAudible = false;
         syncPlayPauseUI(false);
         clearTimeout(autoSkipTimer);
         consecutiveErrors += 1;
@@ -1367,6 +1923,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
 
     audioPlayer.addEventListener('timeupdate', () => {
+        sampleListening();
         const cur = audioPlayer.currentTime;
         const dur = audioPlayer.duration || 0;
         const pct = dur > 0 && isFinite(dur) ? `${(cur / dur) * 100}%` : null;
@@ -1399,7 +1956,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
     audioPlayer.addEventListener('ended', () => {
         if (currentlyPlayingTrack) {
-            sendHistory(currentlyPlayingTrack.id, 'finish', audioPlayer.duration || 0);
+            finishFeedback('finish');
+            sessionSkipStreak = 0;
         }
         nextTrack(false);
     });
@@ -2280,7 +2838,7 @@ document.addEventListener('DOMContentLoaded', () => {
                 slider.valueAsNumber = vol;
             }
             if (slider) {
-                slider.style.background = `linear-gradient(to right, #ff453a ${pct}%, rgba(255,255,255,0.22) ${pct}%)`;
+                slider.style.background = `linear-gradient(to right, var(--accent) ${pct}%, var(--line-strong) ${pct}%)`;
             }
             if (label) label.textContent = `${pct}%`;
             if (btn) {
@@ -2829,113 +3387,170 @@ document.addEventListener('DOMContentLoaded', () => {
         const existing = document.getElementById('ym-mobile-modal');
         if (existing) existing.remove();
 
-        let info = { lan_url: window.location.origin, tunnel_url: null, tailscale_url: null, cloudflared_installed: false };
+        let info = {
+            lan_url: window.location.origin,
+            tunnel_url: null,
+            no_vpn_url: null,
+            cloudflare_url: null,
+            tailscale_url: null,
+            cloudflared_installed: false,
+            ssh_installed: true
+        };
         try {
             const r = await fetch('/network-info');
             if (r.ok) info = await r.json();
         } catch {}
+
+        let activeQrTarget = info.no_vpn_url || info.lan_url || info.tunnel_url;
+        let activeQrLabel = info.no_vpn_url
+            ? '🌍 Интернет-ссылка БЕЗ VPN (localhost.run)'
+            : '🏠 Домашний Wi-Fi (без VPN)';
 
         const overlay = document.createElement('div');
         overlay.id = 'ym-mobile-modal';
         overlay.className = 'ym-modal-overlay';
 
         const renderModalContent = () => {
-            const primaryUrl = info.tunnel_url || info.tailscale_url || info.lan_url;
-            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(primaryUrl)}`;
+            if (!activeQrTarget) {
+                activeQrTarget = info.no_vpn_url || info.lan_url || info.tunnel_url;
+            }
+            const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=220x220&margin=8&data=${encodeURIComponent(activeQrTarget)}`;
 
             overlay.innerHTML = `
                 <div class="ym-modal-card" style="text-align:center;">
                     <div class="ym-modal-header">
-                        <h3>📱 Слушать с телефона (дома и вне дома)</h3>
+                        <h3>📱 Вход с телефона БЕЗ VPN</h3>
                         <button class="ym-modal-close" id="ym-mobile-close" aria-label="Закрыть">&times;</button>
                     </div>
                     <p class="ym-modal-subtitle" style="text-align:center;">
-                        Наведите камеру телефона на QR-код или скопируйте ссылку. Поддерживается фоновое воспроизведение и переключение треков с заблокированного экрана!
+                        Выберите удобный способ входа без VPN. Все треки и обложки прокачиваются напрямую через ваш ПК, поэтому на телефоне VPN не нужен!
                     </p>
                     <div class="ym-qr-box">
-                        <img id="ym-qr-img" src="${qrUrl}" alt="QR Code" style="width:176px;height:176px;border-radius:12px;background:#fff;padding:6px;margin:0 auto;display:block;">
+                        <img id="ym-qr-img" src="${qrUrl}" alt="QR Code" style="width:172px;height:172px;border-radius:12px;background:#fff;padding:6px;margin:0 auto;display:block;">
                         <div class="ym-qr-caption" id="ym-qr-caption">
-                            QR ведёт на: <b>${info.tunnel_url ? '🌍 Интернет-ссылку (вне дома)' : '🏠 Домашний Wi-Fi'}</b>
+                            QR ведёт на: <b>${escapeHtml(activeQrLabel)}</b>
                         </div>
                     </div>
 
                     <div style="margin:14px 0;text-align:left;">
-                        <label class="ym-label">🌍 Вне дома (мобильный интернет 4G/LTE/5G через HTTPS):</label>
-                        ${info.tunnel_url ? `
+                        <label class="ym-label">🏠 1. Дома по Wi-Fi (мгновенно, без VPN и без ограничений):</label>
+                        <div class="ym-url-copy-row">
+                            <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.lan_url)}" id="ym-lan-input">
+                            <button type="button" class="toolbar-btn toolbar-btn--primary" id="ym-qr-lan" title="Показать QR для домашнего Wi-Fi">QR</button>
+                            <button type="button" class="toolbar-btn" id="ym-copy-lan">Копировать</button>
+                        </div>
+                        <div style="font-size:11px;color:var(--text-muted);margin-top:4px;">
+                            Достаточно, чтобы телефон и компьютер были подключены к одному домашнему роутеру.
+                        </div>
+
+                        <label class="ym-label" style="margin-top:14px;">🌍 2. Вне дома через мобильный интернет БЕЗ VPN (прямой SSH-туннель *.lhr.life):</label>
+                        ${info.no_vpn_url ? `
                             <div class="ym-url-copy-row">
-                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.tunnel_url)}" id="ym-tunnel-input">
-                                <button type="button" class="toolbar-btn toolbar-btn--primary" id="ym-copy-tunnel">Копировать</button>
+                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.no_vpn_url)}" id="ym-novpn-input">
+                                <button type="button" class="toolbar-btn toolbar-btn--primary" id="ym-qr-novpn" title="Показать QR для входа вне дома без VPN">QR</button>
+                                <button type="button" class="toolbar-btn" id="ym-copy-novpn">Копировать</button>
+                                <button type="button" class="toolbar-btn" id="ym-restart-novpn-btn" title="Обновить ссылку без VPN">↻</button>
+                            </div>
+                            <div style="font-size:11px;color:var(--text-muted);margin-top:5px;">
+                                ✅ Домен <code>*.lhr.life</code> (localhost.run) не блокируется российскими мобильными операторами (в отличие от Cloudflare) и открывается на телефоне <b>без VPN</b>.
                             </div>
                         ` : `
                             <div class="ym-tunnel-missing">
-                                <span>Туннель вне дома сейчас не запущен.</span>
-                                <button type="button" class="ym-btn-primary" id="ym-start-tunnel-btn" style="margin-top:8px;">
-                                    🌐 Включить доступ вне дома (HTTPS-туннель)
+                                <span>Прямой туннель без VPN сейчас не запущен.</span>
+                                <button type="button" class="ym-btn-primary" id="ym-start-novpn-btn" style="margin-top:8px;">
+                                    🚀 Включить вход вне дома БЕЗ VPN (localhost.run)
                                 </button>
-                                <div style="font-size:11px;color:#999;margin-top:6px;">
-                                    Или запустите сервер командой <code>./start_remote.sh</code>
-                                </div>
                             </div>
                         `}
 
-                        ${info.tailscale_url ? `
-                            <label class="ym-label" style="margin-top:12px;">🔒 Постоянный адрес Tailscale VPN:</label>
+                        ${info.cloudflare_url ? `
+                            <label class="ym-label" style="margin-top:12px;">☁️ Резервная ссылка Cloudflare (*.trycloudflare.com):</label>
                             <div class="ym-url-copy-row">
-                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.tailscale_url)}">
-                                <button type="button" class="toolbar-btn" id="ym-copy-ts">Копировать</button>
+                                <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.cloudflare_url)}">
+                                <button type="button" class="toolbar-btn" id="ym-qr-cf">QR</button>
+                                <button type="button" class="toolbar-btn" id="ym-copy-cf">Копировать</button>
                             </div>
                         ` : ''}
-
-                        <label class="ym-label" style="margin-top:12px;">🏠 Дома по локальному Wi-Fi:</label>
-                        <div class="ym-url-copy-row">
-                            <input type="text" class="ym-input" style="margin:0;" readonly value="${escapeHtml(info.lan_url)}" id="ym-lan-input">
-                            <button type="button" class="toolbar-btn" id="ym-copy-lan">Копировать</button>
-                        </div>
                     </div>
 
                     <div class="ym-pwa-tip">
-                        <b>💡 Как установить плеер на телефон как приложение:</b><br>
-                        • <b>iPhone (Safari):</b> нажмите «Поделиться» <i class="fas fa-arrow-up-from-bracket"></i> → <b>«На экран "Домой"»</b>.<br>
-                        • <b>Android (Chrome):</b> нажмите меню <b>⋮</b> → <b>«Установить приложение»</b>.
+                        <b>💡 Почему песни теперь играют без VPN на телефоне:</b><br>
+                        • Ваша локальная коллекция (992+ трека) стримится напрямую с ПК.<br>
+                        • Если трек из YouTube недоступен без VPN, сервер автоматически берёт аудио из зеркала SoundCloud и кэширует обложки через <code>/proxy/image</code>.
                     </div>
                 </div>
             `;
 
             overlay.querySelector('#ym-mobile-close').onclick = () => overlay.remove();
-            overlay.querySelector('#ym-copy-tunnel')?.addEventListener('click', () => {
-                navigator.clipboard?.writeText(info.tunnel_url);
-                showToast('✅ Интернет-ссылка для телефона скопирована!');
-            });
-            overlay.querySelector('#ym-copy-ts')?.addEventListener('click', () => {
-                navigator.clipboard?.writeText(info.tailscale_url);
-                showToast('✅ Ссылка Tailscale скопирована!');
+
+            overlay.querySelector('#ym-qr-lan')?.addEventListener('click', () => {
+                activeQrTarget = info.lan_url;
+                activeQrLabel = '🏠 Домашний Wi-Fi (без VPN)';
+                renderModalContent();
             });
             overlay.querySelector('#ym-copy-lan')?.addEventListener('click', () => {
                 navigator.clipboard?.writeText(info.lan_url);
                 showToast('✅ Wi-Fi ссылка скопирована!');
             });
-            overlay.querySelector('#ym-start-tunnel-btn')?.addEventListener('click', async (e) => {
-                const btn = e.currentTarget;
-                btn.disabled = true;
-                btn.textContent = '⏳ Запускаем HTTPS-туннель (5–10 сек)…';
+
+            overlay.querySelector('#ym-qr-novpn')?.addEventListener('click', () => {
+                activeQrTarget = info.no_vpn_url;
+                activeQrLabel = '🌍 Интернет-ссылка БЕЗ VPN (localhost.run)';
+                renderModalContent();
+            });
+            overlay.querySelector('#ym-copy-novpn')?.addEventListener('click', () => {
+                navigator.clipboard?.writeText(info.no_vpn_url);
+                showToast('✅ Ссылка без VPN скопирована!');
+            });
+
+            overlay.querySelector('#ym-qr-cf')?.addEventListener('click', () => {
+                activeQrTarget = info.cloudflare_url;
+                activeQrLabel = '☁️ Резервный Cloudflare туннель';
+                renderModalContent();
+            });
+            overlay.querySelector('#ym-copy-cf')?.addEventListener('click', () => {
+                navigator.clipboard?.writeText(info.cloudflare_url);
+                showToast('✅ Ссылка Cloudflare скопирована!');
+            });
+
+            const triggerTunnelStart = async (btn) => {
+                if (btn) {
+                    btn.disabled = true;
+                    btn.textContent = '⏳ Поднимаем прямой туннель без VPN (5–8 сек)…';
+                }
                 try {
-                    const resp = await fetch('/network-info/start-tunnel', { method: 'POST' });
+                    const resp = await fetch('/network-info/start-tunnel?force=true&provider=auto', { method: 'POST' });
                     const data = await resp.json();
                     if (!resp.ok) throw new Error(data.detail || 'Не удалось запустить туннель');
                     info.tunnel_url = data.tunnel_url;
+                    info.no_vpn_url = data.no_vpn_url || data.tunnel_url;
+                    info.cloudflare_url = data.cloudflare_url;
+                    activeQrTarget = info.no_vpn_url || info.lan_url;
+                    activeQrLabel = info.no_vpn_url
+                        ? '🌍 Интернет-ссылка БЕЗ VPN (localhost.run)'
+                        : '🏠 Домашний Wi-Fi (без VPN)';
                     renderModalContent();
-                    showToast('🌐 Внешняя ссылка для телефона готова!');
+                    showToast('✅ Прямая ссылка для телефона без VPN готова!');
                 } catch (err) {
-                    btn.disabled = false;
-                    btn.textContent = '🌐 Включить доступ вне дома (HTTPS-туннель)';
+                    if (btn) {
+                        btn.disabled = false;
+                        btn.textContent = '🚀 Включить вход вне дома БЕЗ VPN (localhost.run)';
+                    }
                     showToast(`⚠️ ${err.message}`);
                 }
-            });
+            };
+
+            overlay.querySelector('#ym-start-novpn-btn')?.addEventListener('click', (e) => triggerTunnelStart(e.currentTarget));
+            overlay.querySelector('#ym-restart-novpn-btn')?.addEventListener('click', (e) => triggerTunnelStart(e.currentTarget));
         };
 
         document.body.appendChild(overlay);
         overlay.addEventListener('click', (e) => { if (e.target === overlay) overlay.remove(); });
         renderModalContent();
+        if (!info.no_vpn_url) {
+            const autoBtn = overlay.querySelector('#ym-start-novpn-btn');
+            if (autoBtn) autoBtn.click();
+        }
     }
 
     function mountSidebarExtensions() {
@@ -3014,6 +3629,7 @@ document.addEventListener('DOMContentLoaded', () => {
         } catch {}
 
         audioPlayer.addEventListener('timeupdate', () => {
+        sampleListening();
             if ('setPositionState' in navigator.mediaSession && audioPlayer.duration && isFinite(audioPlayer.duration)) {
                 try {
                     navigator.mediaSession.setPositionState({
@@ -3026,9 +3642,11 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    // Регистрация PWA Service Worker для установки на телефон
+    // Регистрация и принудительное обновление PWA Service Worker (очистка старого кэша на ПК и телефоне)
     if ('serviceWorker' in navigator) {
-        navigator.serviceWorker.register('/sw.js').catch(() => {});
+        navigator.serviceWorker.register('/sw.js?v=echo-wave2', { updateViaCache: 'none' })
+            .then(reg => { try { reg.update(); } catch {} })
+            .catch(() => {});
     }
 
     mountSidebarExtensions();

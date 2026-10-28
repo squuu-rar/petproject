@@ -4,16 +4,16 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
     <meta name="color-scheme" content="dark">
-    <meta name="theme-color" content="#0e0d0c">
+    <meta name="theme-color" content="#070a14">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="MusicStream">
-    <title>MusicStream</title>
+    <meta name="apple-mobile-web-app-title" content="Écho">
+    <title>Écho</title>
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500;600&family=Onest:wght@400;500;600;700&family=Unbounded:wght@500;600;700&display=swap&subset=cyrillic">
     <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
-    <link rel="stylesheet" href="/static/css/style.css">
+    <link rel="stylesheet" href="/static/css/style.css?v=echo-novpn3">
     <link rel="manifest" href="/static/manifest.json">
     <link rel="apple-touch-icon" href="/static/img/default-cover.png">
 </head>
@@ -22,7 +22,7 @@
         <div class="topbar-head-row">
             <div class="topbar-logo">
                 <span class="logo-mark" aria-hidden="true"></span>
-                <span>MusicStream</span>
+                <span>Écho</span>
             </div>
             <div class="mobile-quick-actions">
                 <button type="button" class="mobile-top-btn" id="btn-mobile-import-top" title="Импорт треков" aria-label="Импорт треков">
@@ -51,7 +51,7 @@
         <section id="tracklist" aria-live="polite"></section>
     </main>
 
-    <!-- Плеер: в режиме «Моя волна» уходит со сцены, трек уже показан на деке -->
+    <!-- Плеер «Écho»: в режиме «Моя волна» уходит со сцены, трек уже показан на деке -->
     <footer class="player-dock" id="player-dock" aria-label="Плеер">
         <div class="player-dock-left player-info" id="player-dock-info">
             <img src="/static/img/default-cover.svg" alt="" class="player-dock-cover" id="player-cover">
@@ -86,6 +86,6 @@
     </footer>
 
     <audio id="audio-player" preload="auto" playsinline></audio>
-    <script type="module" src="/static/js/app.js"></script>
+    <script type="module" src="/static/js/app.js?v=echo-novpn3"></script>
 </body>
 </html>

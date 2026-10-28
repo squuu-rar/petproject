@@ -12,3 +12,9 @@ def temp_db(tmp_path, monkeypatch):
     monkeypatch.setattr(db, "DB_PATH", test_db)
     db.init_db()
     return test_db
+
+
+@pytest.fixture(autouse=True)
+def isolate_all_database_access(temp_db):
+    """Even tests mocking only part of the engine must never reach the user's DB."""
+    yield

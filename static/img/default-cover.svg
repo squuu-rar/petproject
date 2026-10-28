@@ -1,5 +1,16 @@
 <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 200" width="200" height="200">
-  <rect width="200" height="200" rx="16" fill="#282828"/>
-  <circle cx="100" cy="100" r="45" fill="#181818"/>
-  <path d="M92 70 v42 a14 14 0 1 0 10 13.4 V85 l26 -6 v-9 z" fill="#1db954"/>
+  <defs>
+    <radialGradient id="bgGlow" cx="50%" cy="45%" r="60%">
+      <stop offset="0%" stop-color="#1b2744"/>
+      <stop offset="100%" stop-color="#0d1323"/>
+    </radialGradient>
+    <linearGradient id="accentGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#5884ff"/>
+      <stop offset="100%" stop-color="#3d6eff"/>
+    </linearGradient>
+  </defs>
+  <rect width="200" height="200" rx="24" fill="url(#bgGlow)"/>
+  <circle cx="100" cy="100" r="64" fill="none" stroke="#3d6eff" stroke-opacity="0.18" stroke-width="2"/>
+  <circle cx="100" cy="100" r="46" fill="#070b14" stroke="#3d6eff" stroke-opacity="0.32" stroke-width="1.5"/>
+  <path d="M94 72 v40 a13 13 0 1 0 10 12.6 V86 l24 -6 v-8 z" fill="url(#accentGrad)"/>
 </svg>

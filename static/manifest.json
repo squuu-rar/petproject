@@ -1,12 +1,12 @@
 {
-  "name": "MusicStream — Моя Волна",
-  "short_name": "MusicStream",
-  "description": "Персональный музыкальный плеер с Моей Волной и импортом из Яндекс Музыки",
+  "name": "Écho",
+  "short_name": "Écho",
+  "description": "Музыкальный плеер «Écho» с персональной волной рекомендаций",
   "start_url": "/",
   "scope": "/",
   "display": "standalone",
-  "background_color": "#0e0d0c",
-  "theme_color": "#0e0d0c",
+  "background_color": "#070a14",
+  "theme_color": "#070a14",
   "orientation": "portrait-primary",
   "icons": [
     {

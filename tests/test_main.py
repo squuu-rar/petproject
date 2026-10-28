@@ -1,4 +1,5 @@
 import io
+from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 from main import app
@@ -174,3 +175,96 @@ def test_mobile_stream_range_request(tmp_path):
     assert resp.headers.get("content-range") == f"bytes 0-99/{len(content)}"
     assert len(resp.content) == 100
     assert resp.content == content[:100]
+
+
+def test_wave_yandex_style_features(tmp_path):
+    """Проверяет все 6 принципов «Моей волны» в стиле Яндекс Музыки:
+    1) анализ истории и действий (лайки, дослушивания finish, скипы skip),
+    2) учёт контекста (/wave/context с определением устройства из User-Agent и времени суток),
+    3) классификацию оттенка волны (classify_track_vibe),
+    4) ручные настройки (activity, mood, character, language),
+    5) встряхивание волны (shake=true),
+    6) офлайн-режим (TinyML, offline=true).
+    """
+    from wave_engine import classify_track_vibe
+
+    sample_tracks = [
+        {
+            "path": str(tmp_path / "ru_rock_1.mp3"),
+            "title": "Группа крови",
+            "artist": "Кино",
+            "album": "Группа крови",
+            "genre": "Русский рок",
+            "duration": 245.0,
+            "source": "local",
+        },
+        {
+            "path": str(tmp_path / "ru_rock_2.mp3"),
+            "title": "Выхода нет",
+            "artist": "Сплин",
+            "album": "Гранатовый альбом",
+            "genre": "Русский рок",
+            "duration": 220.0,
+            "source": "local",
+        },
+        {
+            "path": str(tmp_path / "en_track_1.mp3"),
+            "title": "Nightcall",
+            "artist": "Kavinsky",
+            "album": "OutRun",
+            "genre": "Electronic",
+            "duration": 258.0,
+            "source": "local",
+        },
+        {
+            "path": str(tmp_path / "inst_track_1.mp3"),
+            "title": " Calm Ambient Piano (Instrumental) ",
+            "artist": "Brian Eno",
+            "album": "Ambient",
+            "genre": "Ambient Instrumental",
+            "duration": 195.0,
+            "source": "local",
+        },
+    ]
+    # Offline recommendations require actual files, not just paths in the database.
+    for item in sample_tracks:
+        Path(item["path"]).touch()
+    db.bulk_import_tracks(sample_tracks, target_mode="favorites")
+    all_favs = client.get("/favorites").json()
+    assert len(all_favs) == 4
+
+    # Записываем события finish и skip в историю
+    kino_id = next(t["id"] for t in all_favs if t["artist"] == "Кино")
+    splin_id = next(t["id"] for t in all_favs if t["artist"] == "Сплин")
+    assert client.post("/history", json={"track_id": kino_id, "event": "finish", "elapsed_seconds": 240.0}).status_code == 200
+    assert client.post("/history", json={"track_id": splin_id, "event": "skip", "elapsed_seconds": 3.0}).status_code == 200
+
+    # Проверяем контекст для ноутбука и смартфона
+    ctx_desktop = client.get("/wave/context", headers={"User-Agent": "Mozilla/5.0 (X11; Linux x86_64)"}).json()
+    assert ctx_desktop["device"] == "desktop"
+    assert "context_hint" in ctx_desktop
+    assert ctx_desktop["realtime"]["skip_streak"] >= 1
+
+    ctx_mobile = client.get("/wave/context", headers={"User-Agent": "Mozilla/5.0 (iPhone; CPU iPhone OS 17_0 like Mac OS X) Mobile"}).json()
+    assert ctx_mobile["device"] == "mobile"
+
+    # Проверяем офлайн-режим (TinyML) и языковые фильтры
+    wave_ru = client.get("/wave?limit=10&language=ru&offline=true").json()
+    assert len(wave_ru) >= 1
+    assert all(t["artist"] in ("Кино", "Сплин") for t in wave_ru)
+
+    wave_foreign = client.get("/wave?limit=10&language=foreign&offline=true").json()
+    assert len(wave_foreign) >= 1
+    assert any(t["artist"] in ("Kavinsky", "Brian Eno") for t in wave_foreign)
+
+    wave_inst = client.get("/wave?limit=10&language=instrumental&offline=true").json()
+    assert len(wave_inst) >= 1
+    assert any("Ambient" in (t.get("genre") or "") or "Instrumental" in (t.get("title") or "") for t in wave_inst)
+
+    # Проверяем функцию «Встряхнуть Мою волну» (shake=true)
+    wave_shaken = client.get("/wave?limit=10&shake=true&offline=true").json()
+    assert len(wave_shaken) >= 1
+
+    # Проверяем определение оттенка волны под характер трека
+    assert classify_track_vibe(sample_tracks[3], active_mood="calm") == "calm"
+    assert classify_track_vibe(sample_tracks[2], active_mood="energetic") == "energy"

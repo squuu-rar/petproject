@@ -169,10 +169,16 @@ def test_post_history_skip_valid(setup_test_db):
     assert response.status_code == 200
     assert response.json() == {"status": "ok"}
 
-def test_post_history_skip_invalid(setup_test_db):
+def test_post_history_late_skip_is_recorded(setup_test_db):
     response = client.post("/history", json={"track_id": 1, "event": "skip", "elapsed_seconds": 15.0})
-    assert response.status_code == 400
-    assert "Skip only accepted" in response.json()["detail"]
+    assert response.status_code == 200
+    conn = db.get_db()
+    try:
+        row = conn.execute("SELECT elapsed_seconds, signal_weight FROM history WHERE event='skip'").fetchone()
+        assert row["elapsed_seconds"] == 15.0
+        assert row["signal_weight"] < 0
+    finally:
+        conn.close()
 
 def test_post_history_finish(setup_test_db):
     response = client.post("/history", json={"track_id": 1, "event": "finish", "elapsed_seconds": 180.0})

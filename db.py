@@ -1,9 +1,16 @@
+import math
 import random
 import re
 import sqlite3
 import time
 from pathlib import Path
 from typing import List, Dict, Any, Optional
+from wave_feedback import migrate as migrate_wave_feedback
+from music_metadata import Exclusions, with_cached_tags
+
+
+def history_weight(event, stored=None):
+    return stored if stored is not None else {"finish": 2.5, "like": 3.5, "skip": -3.0, "dislike": -4.0}.get(event, 0.0)
 
 DB_PATH = Path(__file__).resolve().parent / "tracks.db"
 
@@ -18,10 +25,13 @@ INVALID_ARTIST_NAMES = {
     "разные исполнители",
 }
 
+CYRILLIC_RE = re.compile(r"[а-яА-ЯёЁ]")
+
 
 def get_db():
     conn = sqlite3.connect(DB_PATH, timeout=30.0)
     conn.row_factory = sqlite3.Row
+    conn.create_function("history_weight", 2, history_weight, deterministic=True)
     try:
         conn.execute("PRAGMA journal_mode=WAL")
     except sqlite3.OperationalError:
@@ -103,6 +113,7 @@ def init_db():
         if col_name not in hist_cols:
             cur.execute(f"ALTER TABLE history ADD COLUMN {col_name} {col_type}")
 
+    migrate_wave_feedback(conn)
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tracks_external_id ON tracks(external_id)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tracks_liked ON tracks(liked)")
     cur.execute("CREATE INDEX IF NOT EXISTS idx_tracks_artist ON tracks(artist)")
@@ -205,20 +216,17 @@ def get_wave_exclusions(days: int = 3, skip_threshold: int = 1) -> set:
             SELECT t.external_id
             FROM history h
             JOIN tracks t ON h.track_id = t.id
-            WHERE t.external_id IS NOT NULL
+            WHERE t.external_id IS NOT NULL AND h.timestamp >= ?
             GROUP BY t.external_id
             HAVING SUM(CASE WHEN h.event IN ('play', 'finish') AND h.timestamp >= ? THEN 1 ELSE 0 END) > 0
-               OR SUM(CASE WHEN h.event = 'skip' THEN 1 ELSE 0 END) >= ?
-        """, (since, skip_threshold)).fetchall()
+               OR SUM(CASE WHEN h.event IN ('skip','dislike','error') THEN 1 ELSE 0 END) >= ?
+        """, (since, since, skip_threshold)).fetchall()
         return {r["external_id"] for r in rows}
     finally:
         conn.close()
 
 
 def get_known_collection_keys() -> set[tuple[str, str]]:
-    """Возвращает множество пар (artist_lower, title_lower) для всех треков, которые уже есть
-    в «Любимом» или в плейлистах пользователя, чтобы не дублировать их во внешнем пуле рекомендаций.
-    """
     init_playlists_tables()
     conn = get_db()
     try:
@@ -240,7 +248,6 @@ def get_known_collection_keys() -> set[tuple[str, str]]:
 
 
 def get_recently_played_or_skipped_ids(hours: float = 24.0) -> set[int]:
-    """Возвращает ID треков, которые уже играли или были пропущены за последние N часов."""
     since = time.time() - hours * 3600.0
     conn = get_db()
     try:
@@ -254,21 +261,99 @@ def get_recently_played_or_skipped_ids(hours: float = 24.0) -> set[int]:
 
 
 def get_recently_skipped_artists(days: float = 2.0) -> set[str]:
-    """Возвращает список артистов в нижнем регистре, которых пользователь недавно скипал («Не моё»)."""
     since = time.time() - days * 86400.0
     conn = get_db()
     try:
         rows = conn.execute("""
-            SELECT LOWER(TRIM(t.artist)) as art,
-                   SUM(CASE WHEN h.event = 'skip' THEN 1 ELSE 0 END) as skips,
-                   SUM(CASE WHEN h.event = 'finish' THEN 1 ELSE 0 END) as finishes
+            SELECT t.artist, h.event, h.signal_weight
             FROM history h
             JOIN tracks t ON h.track_id = t.id
             WHERE h.timestamp >= ? AND t.artist IS NOT NULL
-            GROUP BY LOWER(TRIM(t.artist))
-            HAVING skips > finishes AND skips >= 1
         """, (since,)).fetchall()
-        return {r["art"] for r in rows if r["art"]}
+        # SQLite LOWER only handles ASCII; normalize Russian artist names in Python.
+        counts: Dict[str, List[int]] = {}
+        for row in rows:
+            artist = (row["artist"] or "").strip().lower()
+            signals = counts.setdefault(artist, [0, 0])
+            weight = history_weight(row["event"], row["signal_weight"])
+            if weight <= -2:
+                signals[0] += 1
+            elif weight >= 2:
+                signals[1] += 1
+        return {artist for artist, (skips, positives) in counts.items()
+                if artist and skips >= 2 and skips > positives}
+    finally:
+        conn.close()
+
+
+def get_realtime_session_signals(minutes: float = 45.0) -> Dict[str, Any]:
+    """Анализирует действия пользователя ПРЯМО СЕЙЧАС (за последние N минут):
+    - Какие треки/артисты были дослушаны до конца (finish) или лайкнуты (like) прямо сейчас
+    - Какие артисты и треки были скипнуты (skip) прямо сейчас
+    - Серия подряд идущих скипов (skip_streak), сигнализирующая о необходимости сменить вектор волны.
+    """
+    since = time.time() - minutes * 60.0
+    conn = get_db()
+    try:
+        rows = conn.execute("""
+            SELECT h.track_id, h.event, h.timestamp, h.signal_weight, t.artist, t.title, t.genre
+            FROM history h
+            JOIN tracks t ON h.track_id = t.id
+            WHERE h.timestamp >= ?
+            ORDER BY h.timestamp DESC, h.id DESC
+            LIMIT 30
+        """, (since,)).fetchall()
+
+        positive_track_ids: List[int] = []
+        positive_artists: List[str] = []
+        skipped_artists: set[str] = set()
+        recent_session_artists: set[str] = set()
+        skip_streak = 0
+        streak_active = True
+        latest_track_signal: Dict[int, str] = {}
+        artist_signals: Dict[str, List[int]] = {}
+
+        for r in rows:
+            ev = r["event"]
+            weight = history_weight(ev, r["signal_weight"])
+            tid = int(r["track_id"])
+            art = (r["artist"] or "").strip()
+            art_low = art.lower()
+            if art_low and art_low not in INVALID_ARTIST_NAMES:
+                recent_session_artists.add(art_low)
+
+            if streak_active:
+                if weight <= -2:
+                    skip_streak += 1
+                elif ev in ("finish", "like", "skip", "stop"):
+                    streak_active = False
+
+            if ev in ("finish", "like", "skip", "dislike", "stop"):
+                latest_track_signal.setdefault(tid, "skip" if weight < 0 else ev)
+                counts = artist_signals.setdefault(art_low, [0, 0])
+                if weight <= -2:
+                    counts[0] += 1
+                elif weight >= 2:
+                    counts[1] += 1
+
+            if weight >= 2 and latest_track_signal.get(tid) != "skip":
+                if tid not in positive_track_ids:
+                    positive_track_ids.append(tid)
+                if art and art_low not in INVALID_ARTIST_NAMES and art not in positive_artists:
+                    positive_artists.append(art)
+
+        skipped_artists = {
+            artist for artist, (skips, positives) in artist_signals.items()
+            if artist not in INVALID_ARTIST_NAMES and skips >= 2 and skips > positives
+        }
+
+        return {
+            "positive_track_ids": positive_track_ids[:4],
+            "positive_artists": positive_artists[:5],
+            "skipped_artists": skipped_artists,
+            "recent_session_artists": recent_session_artists,
+            "skip_streak": skip_streak,
+        }
     finally:
         conn.close()
 
@@ -318,7 +403,6 @@ def save_remote_track(track_data: Dict[str, Any]) -> Dict[str, Any]:
 
 
 def get_all_tracks_with_play_counts() -> List[Dict[str, Any]]:
-    """Returns all tracks with their play count from history."""
     conn = get_db()
     try:
         query = """
@@ -710,13 +794,7 @@ def get_taste_profile_artists(limit: int = 30) -> List[str]:
                 WHERE t.artist IS NOT NULL
                 UNION ALL
                 SELECT t.artist,
-                       CASE
-                           WHEN h.event = 'finish' THEN 3.0
-                           WHEN h.event = 'play' THEN 1.5
-                           WHEN h.event = 'like' THEN 2.0
-                           WHEN h.event = 'skip' THEN -2.5
-                           ELSE 0.0
-                       END as weight
+                       history_weight(h.event, h.signal_weight) / (1.0 + MAX(0.0, ? - h.timestamp) / 2592000.0) as weight
                 FROM history h
                 JOIN tracks t ON h.track_id = t.id
                 WHERE t.artist IS NOT NULL
@@ -729,7 +807,7 @@ def get_taste_profile_artists(limit: int = 30) -> List[str]:
             HAVING score > 0
             ORDER BY score DESC
             LIMIT ?
-        """, (limit * 2,)).fetchall()
+        """, (time.time(), limit * 2)).fetchall()
 
         seen_lower: set[str] = set()
         result: List[str] = []
@@ -749,12 +827,35 @@ def get_taste_profile_artists(limit: int = 30) -> List[str]:
         conn.close()
 
 
+def _matches_language(track: Dict[str, Any], language: Optional[str]) -> bool:
+    if not language or language == "all":
+        return True
+    detected = track.get("detected_language")
+    if detected:
+        return detected == language
+    text = f"{track.get('artist') or ''} {track.get('title') or ''}"
+    genre_album = f"{track.get('genre') or ''} {track.get('album') or ''} {' '.join(track.get('tags') or [])}".lower()
+    if language == "instrumental":
+        return any(w in text.lower() or w in genre_album for w in ("instrumental", "инструментал", "ost", "soundtrack", "ambient", "post-rock", "piano", "acoustic"))
+    has_cyr = bool(CYRILLIC_RE.search(text))
+    if language == "ru":
+        return has_cyr
+    if language == "foreign":
+        return not has_cyr
+    return True
+
+
 def sample_taste_tracks(
     limit: int = 20,
     max_per_artist: int = 1,
     exclude_ids: Optional[set] = None,
+    language: Optional[str] = None,
+    offline_only: bool = False,
+    exclude_tracks: Optional[list] = None,
 ) -> List[Dict[str, Any]]:
-    """Быстрая взвешенная выборка треков из коллекции с исключением недавно прослушанных/пропущенных."""
+    """Взвешенная выборка с затуханием истории и строгими фильтрами доступности/языка."""
+    if limit <= 0:
+        return []
     init_playlists_tables()
     recent_blocked = get_recently_played_or_skipped_ids(hours=12.0)
     skipped_artists = get_recently_skipped_artists(days=2.0)
@@ -764,46 +865,75 @@ def sample_taste_tracks(
     try:
         rows = conn.execute("""
             SELECT
-                t.id,
-                t.artist,
-                t.liked,
+                t.*,
                 CASE WHEN EXISTS (
                     SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.id
-                ) THEN 1 ELSE 0 END as in_playlist
+                ) THEN 1 ELSE 0 END as in_playlist,
+                COALESCE((
+                    SELECT SUM(history_weight(h.event, h.signal_weight) / (1.0 + MAX(0.0, ? - h.timestamp) / 2592000.0))
+                    FROM history h WHERE h.track_id = t.id
+                ), 0.0) as history_affinity
             FROM tracks t
-            WHERE (t.liked = 1 OR t.source = 'local' OR EXISTS (
+            WHERE (t.liked = 1 OR t.source = 'local' OR t.cache_path IS NOT NULL OR EXISTS (
                 SELECT 1 FROM playlist_tracks pt WHERE pt.track_id = t.id
             ))
               AND t.title IS NOT NULL
               AND LENGTH(TRIM(t.title)) > 1
-        """).fetchall()
+        """, (time.time(),)).fetchall()
 
         if not rows:
             return []
 
+        exclusions = Exclusions(exclude_tracks or [])
+        all_dicts = [d for r in rows if not exclusions.contains(d := _normalize_track_row(r))]
+        all_dicts = with_cached_tags(all_dicts, conn)
+        if offline_only:
+            valid_offline = []
+            for d in all_dicts:
+                if d.get("source") == "local" and d.get("path") and Path(d["path"]).is_file():
+                    valid_offline.append(d)
+                elif d.get("cache_path") and Path(d["cache_path"]).is_file():
+                    valid_offline.append(d)
+            all_dicts = valid_offline
+
+        all_dicts = [d for d in all_dicts if _matches_language(d, language)]
+        skipped_ids = {int(r[0]) for r in conn.execute(
+            "SELECT DISTINCT track_id FROM history WHERE event IN ('skip','dislike','error') AND timestamp >= ?",
+            (time.time() - 3 * 86400,),
+        ) if r[0] is not None}
+        hard_exclude = (exclude_ids or set()) | skipped_ids
+        all_dicts = [d for d in all_dicts if d["id"] not in hard_exclude
+                     and str(d.get("artist") or "").strip().lower() not in skipped_artists]
+
         candidates = [
-            dict(r) for r in rows
-            if r["id"] not in exclude
-            and str(r["artist"] or "").strip().lower() not in skipped_artists
+            d for d in all_dicts
+            if d["id"] not in exclude
+            and str(d.get("artist") or "").strip().lower() not in skipped_artists
         ]
         if not candidates:
-            candidates = [dict(r) for r in rows if r["id"] not in (exclude_ids or set())]
-        if not candidates:
-            candidates = [dict(r) for r in rows]
+            # Only relax the playback cooldown for small collections, never skips or filters.
+            candidates = all_dicts
 
+        now = time.time()
         weighted: List[tuple[float, Dict[str, Any]]] = []
         for c in candidates:
             base_w = 1.0
             if c.get("liked"):
-                base_w += 2.0
+                base_w += 2.2
             if c.get("in_playlist"):
                 base_w += 1.5
+            hist_aff = float(c.get("history_affinity") or 0.0)
+            base_w = max(0.2, base_w + max(-5.0, min(8.0, hist_aff)))
+            # Бонус за давно не прослушивавшиеся треки (свежесть воспоминаний)
+            last_acc = float(c.get("last_accessed") or 0.0)
+            if last_acc == 0 or (now - last_acc) > 7 * 86400:
+                base_w += 1.2
             score = random.random() ** (1.0 / base_w)
             weighted.append((score, c))
 
         weighted.sort(key=lambda x: x[0], reverse=True)
 
-        selected_ids: List[int] = []
+        selected: List[Dict[str, Any]] = []
         artist_counts: Dict[str, int] = {}
         for _, c in weighted:
             art_key = str(c.get("artist") or "").strip().lower()
@@ -811,30 +941,22 @@ def sample_taste_tracks(
                 if artist_counts.get(art_key, 0) >= max_per_artist:
                     continue
                 artist_counts[art_key] = artist_counts.get(art_key, 0) + 1
-            selected_ids.append(int(c["id"]))
-            if len(selected_ids) >= limit:
+            c_clean = {k: v for k, v in c.items() if k not in ("in_playlist", "history_affinity")}
+            selected.append(c_clean)
+            if len(selected) >= limit:
                 break
 
-        if len(selected_ids) < limit:
-            chosen_set = set(selected_ids)
+        if len(selected) < limit:
+            chosen_ids = {t["id"] for t in selected}
             for _, c in weighted:
-                tid = int(c["id"])
-                if tid not in chosen_set:
-                    selected_ids.append(tid)
-                    chosen_set.add(tid)
-                    if len(selected_ids) >= limit:
+                if c["id"] not in chosen_ids:
+                    c_clean = {k: v for k, v in c.items() if k not in ("in_playlist", "history_affinity")}
+                    selected.append(c_clean)
+                    chosen_ids.add(c["id"])
+                    if len(selected) >= limit:
                         break
 
-        if not selected_ids:
-            return []
-
-        placeholders = ",".join(["?"] * len(selected_ids))
-        full_rows = conn.execute(
-            f"SELECT * FROM tracks WHERE id IN ({placeholders})",
-            selected_ids,
-        ).fetchall()
-        by_id = {int(r["id"]): _normalize_track_row(r) for r in full_rows}
-        return [by_id[tid] for tid in selected_ids if tid in by_id]
+        return selected
     finally:
         conn.close()
 

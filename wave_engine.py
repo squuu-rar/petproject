@@ -1,21 +1,28 @@
 import asyncio
+import datetime
 import random
 import re
+from collections import Counter
+from difflib import SequenceMatcher
+from pathlib import Path
 from typing import List, Dict, Any, Optional
 
 from ytmusicapi import YTMusic
 from db import (
+    CYRILLIC_RE,
+    _matches_language,
     get_db,
     get_known_collection_keys,
+    get_realtime_session_signals,
     get_recently_skipped_artists,
     get_taste_profile_artists,
     get_wave_exclusions,
     sample_taste_tracks,
 )
 from lastfm_service import LastFMService
+from music_metadata import Exclusions, enrich_tracks, track_key
+from wave_feedback import VERSION
 
-# Кэш соответствия (artist_lower, title_lower) -> YouTube videoId для локальных сидов из Яндекс Музыки,
-# чтобы YTMusic Radio мгновенно строил волну по локальным MP3 без external_id
 _LOCAL_SEED_VIDEO_CACHE: Dict[tuple[str, str], str] = {}
 
 SPAM_TITLE_PATTERNS = re.compile(
@@ -23,11 +30,112 @@ SPAM_TITLE_PATTERNS = re.compile(
     flags=re.IGNORECASE,
 )
 
+# Ключевые слова для классификации настроения/энергетики трека и выбора цвета волны
+ENERGETIC_KEYWORDS = ("рок", "rock", "панк", "punk", "metal", "метал", "alternative", "альтернатив", "драйв", "phonk", "drum", "hard", "rave", "workout")
+CALM_KEYWORDS = ("calm", "спокой", "ambient", "acoustic", "акустик", "lo-fi", "lofi", "focus", "chill", "jazz", "джаз", "piano", "instrumental", "инди", "indie")
+SAD_DARK_KEYWORDS = ("post-punk", "пост-панк", "груст", "sad", "doomer", "dark", "меланхол", "бард", "shoegaze", "coldwave", "ночь", "night")
+JOY_KEYWORDS = ("поп", "pop", "dance", "disco", "funk", "фанк", "summer", "бодр", "happy", "хит")
+
+
+def detect_wave_context(
+    device: Optional[str] = None,
+    hour: Optional[int] = None,
+    weekday: Optional[int] = None,
+) -> Dict[str, Any]:
+    """Определяет контекст слушателя: время суток, день недели и устройство (ПК/ноутбук vs телефон)."""
+    now = datetime.datetime.now()
+    h = hour if hour is not None else now.hour
+    wd = weekday if weekday is not None else now.weekday()  # 0=Пн .. 6=Вс
+    dev = (device or "desktop").lower()
+    is_weekend = wd >= 5 or (wd == 4 and h >= 18)
+
+    if 6 <= h < 11:
+        time_of_day = "morning"
+        time_label = "Утро"
+    elif 11 <= h < 18:
+        time_of_day = "day"
+        time_label = "День"
+    elif 18 <= h < 23:
+        time_of_day = "evening"
+        time_label = "Вечер"
+    else:
+        time_of_day = "night"
+        time_label = "Ночь"
+
+    # Автоматический профиль по контексту (как в Яндекс Музыке):
+    # - Будний день с ноутбука/ПК -> спокойный сфокусированный поток для работы
+    # - С телефона в пути или пятница/выходные -> бодрый и энергичный поток
+    # - Ночь -> спокойный и атмосферный ночной поток
+    if time_of_day == "night":
+        auto_mood = "dark"
+        auto_activity = "relax"
+        context_hint = f"{time_label} · Атмосферный ночной поток"
+    elif not is_weekend and dev == "desktop" and time_of_day in ("morning", "day"):
+        auto_mood = "calm"
+        auto_activity = "work"
+        context_hint = f"Будни · {time_label} · ПК (Спокойный поток для работы)"
+    elif dev == "mobile" and time_of_day in ("morning", "day", "evening"):
+        auto_mood = "energetic"
+        auto_activity = "commute"
+        context_hint = f"{'Выходные' if is_weekend else 'Будни'} · {time_label} · Смартфон (Бодрый поток)"
+    elif is_weekend:
+        auto_mood = "energetic"
+        auto_activity = "relax"
+        context_hint = f"Выходные · {time_label} · Энергичный микс"
+    else:
+        auto_mood = "calm"
+        auto_activity = "relax"
+        context_hint = f"Будни · {time_label} · Сбалансированный поток"
+
+    return {
+        "time_of_day": time_of_day,
+        "time_label": time_label,
+        "is_weekend": is_weekend,
+        "device": dev,
+        "auto_mood": auto_mood,
+        "auto_activity": auto_activity,
+        "context_hint": context_hint,
+    }
+
+
+def classify_track_vibe(
+    track: Dict[str, Any],
+    active_mood: Optional[str] = None,
+    active_activity: Optional[str] = None,
+) -> str:
+    """Вычисляет цветовой характер трека для динамической анимации «Моей волны»:
+    'energy' (кораллово-алый драйв), 'joy' (солнечно-золотой бодрый),
+    'calm' (сапфирово-лазурный фокус), 'melancholy' (фиолетово-индиговый ночной/грустный).
+    """
+    if active_mood == "energetic" or active_activity == "workout":
+        return "energy"
+    if active_mood == "calm" or active_activity == "work":
+        return "calm"
+    if active_mood in ("sad", "dark"):
+        return "melancholy"
+
+    meta_text = f"{track.get('genre') or ''} {track.get('artist') or ''} {track.get('title') or ''} {track.get('album') or ''}".lower()
+    if any(k in meta_text for k in SAD_DARK_KEYWORDS):
+        return "melancholy"
+    if any(k in meta_text for k in ENERGETIC_KEYWORDS):
+        return "energy"
+    if any(k in meta_text for k in JOY_KEYWORDS):
+        return "joy"
+    if any(k in meta_text for k in CALM_KEYWORDS):
+        return "calm"
+
+    dur = track.get("duration")
+    if isinstance(dur, (int, float)):
+        if dur < 175:
+            return "energy"
+        if dur > 270:
+            return "melancholy"
+    return "calm"
+
 
 class WaveEngine:
     MAX_PARALLEL_SEARCHES = 5
-    # 85% совершенно новых треков (открытия и рекомендации), максимум 15% знакомых треков из Любимого (2–3 на 20 песен)
-    REMOTE_RATIO: float = 0.85
+    REMOTE_RATIO: float = 0.85  # По умолчанию 85% новых открытий, максимум 15% знакомых из Любимого
 
     def __init__(self):
         self.ytmusic = YTMusic()
@@ -82,7 +190,9 @@ class WaveEngine:
                 return None
 
             target_artist_lower = target_artist.lower().strip()
+            target_title_key = self._title_key(target_title)
             best_match = None
+            best_score = 0.0
 
             for item in res:
                 v_id = item.get("videoId")
@@ -90,11 +200,11 @@ class WaveEngine:
                     continue
 
                 artists = item.get("artists", [])
-                item_artist = (artists[0].get("name") if artists else "").lower().strip()
-
-                if target_artist_lower in item_artist or item_artist in target_artist_lower:
+                artist_names = {(a.get("name") or "").lower().strip() for a in artists}
+                title_score = SequenceMatcher(None, target_title_key, self._title_key(item.get("title") or "")).ratio()
+                if target_artist_lower and target_artist_lower in artist_names and title_score >= 0.85 and title_score > best_score:
                     best_match = item
-                    break
+                    best_score = title_score
 
             if not best_match:
                 return None
@@ -109,7 +219,7 @@ class WaveEngine:
             album_name = album_info.get("name") if isinstance(album_info, dict) else "-"
             thumbs = best_match.get("thumbnails", [])
             cover_url = self._upscale_cover(thumbs[-1]["url"]) if thumbs else None
-            dur = item.get("duration_seconds") or self._parse_duration(best_match.get("duration"))
+            dur = best_match.get("duration_seconds") or self._parse_duration(best_match.get("duration"))
 
             return {
                 "id": -1,
@@ -131,10 +241,38 @@ class WaveEngine:
         except Exception:
             return None
 
+    @staticmethod
+    def _title_key(title: str) -> str:
+        title = re.sub(r"\b(?:official\s+(?:music\s+)?(?:video|audio)|lyrics?)\b", "", title.lower())
+        return " ".join(re.findall(r"\w+", title))
+
+    @staticmethod
+    def _rank_tracks(tracks, taste_artists=(), positive_artists=(), mood=None, activity=None):
+        """Soft metadata preference: missing genre data never excludes a track."""
+        taste = {a.strip().lower(): 1.0 / (1.0 + i / 10.0) for i, a in enumerate(taste_artists)}
+        positive = {a.strip().lower() for a in positive_artists}
+        keywords = {
+            "energetic": ENERGETIC_KEYWORDS, "calm": CALM_KEYWORDS,
+            "sad": SAD_DARK_KEYWORDS, "dark": SAD_DARK_KEYWORDS,
+        }.get(mood, ())
+        activity_keywords = {
+            "work": CALM_KEYWORDS, "relax": CALM_KEYWORDS,
+            "workout": ENERGETIC_KEYWORDS, "commute": ENERGETIC_KEYWORDS,
+        }.get(activity, ())
+
+        def score(track):
+            artist = (track.get("artist") or "").strip().lower()
+            metadata = " ".join(str(track.get(k) or "") for k in ("title", "genre", "album")).lower()
+            tags = " ".join(track.get("tags") or [])
+            return (taste.get(artist, 0.0) + (1.5 if artist in positive else 0.0)
+                    + (1.5 if any(k in metadata for k in keywords) else 0.0)
+                    + (0.5 if any(k in metadata for k in activity_keywords) else 0.0)
+                    + (2.0 if any(k in tags for k in keywords) else 0.0)
+                    + (1.0 if any(k in tags for k in activity_keywords) else 0.0))
+
+        return sorted(tracks, key=score, reverse=True)
+
     def _resolve_video_id_for_seed(self, seed: Dict[str, Any]) -> Optional[str]:
-        """Для локального трека из Яндекс Музыки (у которого external_id=None) находит его videoId в YTMusic,
-        чтобы запустить радио-рекомендации по этому треку.
-        """
         ext = seed.get("external_id")
         if ext and not str(ext).startswith("http"):
             return str(ext)
@@ -194,16 +332,48 @@ class WaveEngine:
 
         return await asyncio.to_thread(_fetch)
 
+    @staticmethod
+    def _build_context_search_modifier(
+        activity: Optional[str],
+        mood: Optional[str],
+        language: Optional[str],
+    ) -> Optional[str]:
+        """Подбирает поисковые модификаторы для ручных настроек и контекста."""
+        if language == "instrumental":
+            return "instrumental post-rock ambient"
+        mods = []
+        if activity == "work":
+            mods.append("спокойная для работы acoustic")
+        elif activity == "workout":
+            mods.append("энергичный драйв")
+        elif activity == "commute":
+            mods.append("в дорогу драйв")
+        elif activity == "relax":
+            mods.append("атмосферная чилл")
+
+        if mood == "energetic":
+            mods.append("бодрый рок драйв")
+        elif mood == "calm":
+            mods.append("спокойная акустика инди")
+        elif mood == "sad":
+            mods.append("грустная лирика меланхолия")
+        elif mood == "dark":
+            mods.append("пост-панк doomer dark")
+
+        return " ".join(mods) if mods else None
+
     def _discover_from_ytmusic_taste(
         self,
         taste_artists: List[str],
         forbidden_titles: set,
         known_collection: set[tuple[str, str]],
         skipped_artists: set[str],
+        activity: Optional[str] = None,
+        mood: Optional[str] = None,
+        character: Optional[str] = None,
+        language: Optional[str] = None,
+        shake: bool = False,
     ) -> List[Dict[str, Any]]:
-        """Находит новые треки через YTMusic (похожие исполнители + незнакомые песни любимых артистов),
-        работает без API-ключа Last.fm и идеально подходит для русского рока/панка/инди/альтернативы.
-        """
         if not taste_artists:
             return []
 
@@ -211,37 +381,64 @@ class WaveEngine:
         if not valid_taste:
             valid_taste = taste_artists
 
-        # Берём 2 артиста из ядра вкуса (топ-15) и 2 из более широкого круга (15..60) для свежести
-        top_slice = valid_taste[:15]
-        mid_slice = valid_taste[15:60]
-        chosen_artists: List[str] = []
-        if top_slice:
-            chosen_artists.extend(random.sample(top_slice, min(2, len(top_slice))))
-        if mid_slice:
-            chosen_artists.extend(random.sample(mid_slice, min(2, len(mid_slice))))
+        if language in ("ru", "foreign"):
+            lang_artists = [
+                a for a in valid_taste
+                if (bool(CYRILLIC_RE.search(a)) if language == "ru" else not bool(CYRILLIC_RE.search(a)))
+            ]
+            if lang_artists:
+                valid_taste = lang_artists
+
+        # В режиме «Встряхнуть волну» (shake=True) прыгаем в дальние кластеры вкуса (ранги 8..60)
+        if shake and len(valid_taste) > 8:
+            pool = valid_taste[6:]
+            chosen_artists = random.sample(pool, min(4, len(pool)))
+        else:
+            top_slice = valid_taste[:15]
+            mid_slice = valid_taste[15:60]
+            chosen_artists = []
+            if top_slice:
+                chosen_artists.extend(random.sample(top_slice, min(2, len(top_slice))))
+            if mid_slice:
+                chosen_artists.extend(random.sample(mid_slice, min(2, len(mid_slice))))
 
         discovered: List[Dict[str, Any]] = []
+        context_mod = self._build_context_search_modifier(activity, mood, language)
 
         for art_name in chosen_artists[:3]:
             try:
-                # 1. Ищем профиль артиста в YTMusic, чтобы достать похожих исполнителей (related)
                 art_search = self.ytmusic.search(art_name, filter="artists", limit=1) or []
                 related_names: List[str] = []
                 if art_search and art_search[0].get("browseId"):
                     try:
                         info = self.ytmusic.get_artist(art_search[0]["browseId"]) or {}
                         rel_results = (info.get("related") or {}).get("results") or []
-                        for rel in rel_results[:5]:
+                        for rel in rel_results[:6]:
                             r_title = (rel.get("title") or "").strip()
                             if r_title and r_title.lower() not in skipped_artists:
                                 related_names.append(r_title)
                     except Exception:
                         pass
 
-                # Выбираем 2 похожих артиста + самого артиста (для поиска его песен, которых ещё нет в Любимом)
-                query_targets = random.sample(related_names, min(2, len(related_names))) + [art_name]
+                if character == "discovery" and related_names:
+                    query_targets = random.sample(related_names, min(3, len(related_names)))
+                else:
+                    query_targets = random.sample(related_names, min(2, len(related_names))) + [art_name]
+
                 for target_art in query_targets:
-                    songs = self.ytmusic.search(target_art, filter="songs", limit=6) or []
+                    q_str = f"{target_art} {context_mod}" if context_mod else target_art
+                    songs = self.ytmusic.search(q_str, filter="songs", limit=6) or []
+                    def matches_artist(item):
+                        return target_art.strip().lower() in {
+                            (artist.get("name") or "").strip().lower()
+                            for artist in item.get("artists") or []
+                        }
+
+                    songs = [item for item in songs if matches_artist(item)]
+                    if not songs and q_str != target_art:
+                        songs = self.ytmusic.search(target_art, filter="songs", limit=6) or []
+                        songs = [item for item in songs if matches_artist(item)]
+
                     added_for_target = 0
                     for item in songs:
                         v_id = item.get("videoId")
@@ -260,36 +457,31 @@ class WaveEngine:
                         if a_low in skipped_artists:
                             continue
 
-                        # Главное правило: не предлагаем песню, которая УЖЕ лежит в Любимом!
-                        if (a_low, t_low) in known_collection:
+                        if character != "favorite" and (a_low, t_low) in known_collection:
                             continue
 
-                        dur = item.get("duration_seconds") or self._parse_duration(item.get("duration"))
-                        if dur and (dur < 45 or dur > 720):
-                            continue
-
-                        thumbs = item.get("thumbnails") or []
-                        cover_url = self._upscale_cover(thumbs[-1]["url"]) if thumbs else None
-                        album_info = item.get("album") or {}
-                        album_name = album_info.get("name") if isinstance(album_info, dict) else "-"
-
-                        discovered.append({
+                        cand_dict = {
                             "id": -1,
                             "external_id": v_id,
                             "path": f"https://www.youtube.com/watch?v={v_id}",
                             "title": title,
                             "artist": item_artist,
-                            "album": album_name or "-",
+                            "album": (item.get("album") or {}).get("name") if isinstance(item.get("album"), dict) else "-",
                             "genre": "Wave (Discovery)",
                             "year": None,
                             "track_number": None,
-                            "cover_path": cover_url,
-                            "duration": float(dur) if dur else None,
+                            "cover_path": self._upscale_cover((item.get("thumbnails") or [{}])[-1].get("url")),
+                            "duration": float(item.get("duration_seconds") or self._parse_duration(item.get("duration")) or 0) or None,
                             "source": "remote",
                             "cache_path": None,
                             "liked": False,
                             "last_accessed": None,
-                        })
+                        }
+
+                        if cand_dict["duration"] and (cand_dict["duration"] < 45 or cand_dict["duration"] > 720):
+                            continue
+
+                        discovered.append(cand_dict)
                         added_for_target += 1
                         if added_for_target >= 2:
                             break
@@ -298,20 +490,36 @@ class WaveEngine:
 
         return discovered
 
-    async def generate_candidates(self, seed_track_ids: List[int]) -> List[Dict[str, Any]]:
+    async def generate_candidates(
+        self,
+        seed_track_ids: List[int],
+        activity: Optional[str] = None,
+        mood: Optional[str] = None,
+        character: Optional[str] = None,
+        language: Optional[str] = None,
+        shake: bool = False,
+        exclude_tracks: Optional[list] = None,
+    ) -> List[Dict[str, Any]]:
         if not seed_track_ids:
             return []
+        exclusions = Exclusions(exclude_tracks or [])
 
         seeds = await asyncio.to_thread(self._resolve_seed_tracks, seed_track_ids)
         if not seeds:
             return []
 
-        known_collection, blocked_ids, skipped_artists, taste_artists = await asyncio.gather(
+        known_collection, blocked_ids, skipped_artists, taste_artists, session_sig = await asyncio.gather(
             asyncio.to_thread(get_known_collection_keys),
             asyncio.to_thread(get_wave_exclusions),
             asyncio.to_thread(get_recently_skipped_artists),
             asyncio.to_thread(get_taste_profile_artists, 60),
+            asyncio.to_thread(get_realtime_session_signals, 45.0),
         )
+
+        # Объединяем долгосрочные и сиюминутные скипы, а при «Встряхнуть» исключаем и артистов текущей сессии!
+        all_skipped_artists = set(skipped_artists) | set(session_sig.get("skipped_artists", set()))
+        if shake:
+            all_skipped_artists |= set(session_sig.get("recent_session_artists", set()))
 
         seed_ext_ids = {s["external_id"] for s in seeds if s.get("external_id")}
         seed_titles = {s["title"].lower().strip() for s in seeds if s.get("title")}
@@ -323,19 +531,22 @@ class WaveEngine:
             async with sem:
                 return await asyncio.to_thread(self._search_youtube_stream, item["artist"], item["title"])
 
-        # 1. Last.fm (если настроен API-ключ)
-        candidate_tasks = []
-        for s in seeds[:3]:
-            if s.get("artist"):
-                candidate_tasks.append(self._get_similar_by_artist(s["artist"], seed_titles))
+        async def get_lastfm_tracks():
+            async def similar(seed):
+                tracks = await self.lastfm.get_similar_tracks(seed["artist"], seed.get("title") or "", limit=8)
+                return tracks or await self._get_similar_by_artist(seed["artist"], seed_titles)
 
-        gathered_groups = await asyncio.gather(*candidate_tasks, return_exceptions=True)
-        raw_candidates = [t for group in gathered_groups if isinstance(group, list) for t in group]
+            groups = await asyncio.gather(*(similar(s) for s in seeds[:3] if s.get("artist")), return_exceptions=True)
+            unique = {}
+            for group in groups:
+                if isinstance(group, list):
+                    for track in group:
+                        key = ((track.get("artist") or "").strip().lower(), (track.get("title") or "").strip().lower())
+                        if all(key) and key[0] not in all_skipped_artists:
+                            unique.setdefault(key, track)
+            resolved = await asyncio.gather(*(resolve(c) for c in unique.values()), return_exceptions=True)
+            return [r for r in resolved if isinstance(r, dict)]
 
-        resolved = await asyncio.gather(*(resolve(c) for c in raw_candidates), return_exceptions=True)
-        lastfm_tracks = [r for r in resolved if isinstance(r, dict)]
-
-        # 2. YTMusic Watch Radio (автоматически находит videoId даже для локальных MP3 из Яндекс Музыки!)
         def get_yt_radio() -> List[Dict[str, Any]]:
             found: List[Dict[str, Any]] = []
             for s in seeds[:3]:
@@ -360,17 +571,16 @@ class WaveEngine:
                     artists = item.get("artists", [])
                     artist_name = (artists[0].get("name") if artists else "Unknown Artist").strip()
                     a_low = artist_name.lower()
-                    if a_low in skipped_artists:
+                    if a_low in all_skipped_artists:
                         continue
-                    # Исключаем треки, которые уже есть в Любимом / локальной коллекции
-                    if (a_low, t_low) in known_collection:
+                    if character != "favorite" and (a_low, t_low) in known_collection:
                         continue
                     dur = item.get("duration_seconds") or self._parse_duration(item.get("length") or item.get("duration"))
                     if dur and (dur < 45 or dur > 720):
                         continue
                     thumbs = item.get("thumbnail") or item.get("thumbnails") or []
                     cover_url = self._upscale_cover(thumbs[-1]["url"]) if thumbs else None
-                    found.append({
+                    cand = {
                         "id": -1,
                         "external_id": v_id,
                         "path": f"https://www.youtube.com/watch?v={v_id}",
@@ -386,23 +596,30 @@ class WaveEngine:
                         "cache_path": None,
                         "liked": False,
                         "last_accessed": None,
-                    })
+                    }
+                    found.append(cand)
             return found
 
-        # 3. Запускаем YTMusic Radio и YTMusic Taste Discovery параллельно
         radio_future = asyncio.to_thread(get_yt_radio)
         taste_future = asyncio.to_thread(
             self._discover_from_ytmusic_taste,
             taste_artists,
             seed_titles,
             known_collection,
-            skipped_artists,
+            all_skipped_artists,
+            activity,
+            mood,
+            character,
+            language,
+            shake,
         )
-        radio_res, taste_res = await asyncio.gather(radio_future, taste_future, return_exceptions=True)
+        radio_res, taste_res, lastfm_res = await asyncio.gather(
+            radio_future, taste_future, get_lastfm_tracks(), return_exceptions=True,
+        )
         radio_tracks = radio_res if isinstance(radio_res, list) else []
         taste_tracks = taste_res if isinstance(taste_res, list) else []
+        lastfm_tracks = lastfm_res if isinstance(lastfm_res, list) else []
 
-        # Перемешиваем и чередуем каналы рекомендаций
         random.shuffle(radio_tracks)
         random.shuffle(taste_tracks)
         random.shuffle(lastfm_tracks)
@@ -421,15 +638,24 @@ class WaveEngine:
         seen_artist_title: set[tuple[str, str]] = set()
         artist_counts: Dict[str, int] = {}
 
-        for t in merged:
+        merged = [t for t in merged if not exclusions.contains(t)]
+        merged = await enrich_tracks(merged, getattr(self, "lastfm", None))
+        ranked = self._rank_tracks(merged, taste_artists, session_sig.get("positive_artists") or [], mood, activity)
+        for t in ranked:
             ext_id = t.get("external_id")
             if not ext_id or ext_id in blocked_ids or ext_id in candidates:
                 continue
             a_low = (t.get("artist") or "").strip().lower()
             t_low = (t.get("title") or "").strip().lower()
+            if not a_low or not t_low or a_low in all_skipped_artists:
+                continue
+            if SPAM_TITLE_PATTERNS.search(t_low) or not _matches_language(t, language):
+                continue
+            duration = self._parse_duration(t.get("duration"))
+            if duration is not None and not 45 <= duration <= 720:
+                continue
             if (a_low, t_low) in known_collection or (a_low, t_low) in seen_artist_title:
                 continue
-            # Не более 2 треков одного исполнителя на один батч волны
             if a_low and artist_counts.get(a_low, 0) >= 2:
                 continue
             artist_counts[a_low] = artist_counts.get(a_low, 0) + 1
@@ -444,73 +670,107 @@ class WaveEngine:
         familiar_tracks: List[Dict[str, Any]],
         limit: int,
     ) -> List[Dict[str, Any]]:
-        """Формирует очередь так, чтобы:
-        - Первые 3 трека всегда были свежими открытиями (remote_tracks)
-        - Знакомые любимые треки (не более 15%, т.е. 2–3 штуки на 20 песен) вставлялись равномерно через каждые 5–6 новых треков
-        - Один и тот же исполнитель не шёл дважды подряд
-        """
-        if not remote_tracks:
-            return familiar_tracks[:limit]
-        if not familiar_tracks:
-            return remote_tracks[:limit]
-
-        result: List[Dict[str, Any]] = []
-        rem_idx = 0
-        fam_idx = 0
-        # Вставляем 1 знакомый трек после каждых 5 новых открытий
-        step_new = max(4, round(len(remote_tracks) / max(1, len(familiar_tracks))))
-
-        while len(result) < limit and (rem_idx < len(remote_tracks) or fam_idx < len(familiar_tracks)):
-            for _ in range(step_new):
-                if rem_idx < len(remote_tracks) and len(result) < limit:
-                    result.append(remote_tracks[rem_idx])
-                    rem_idx += 1
-            if fam_idx < len(familiar_tracks) and len(result) < limit:
-                result.append(familiar_tracks[fam_idx])
+        # Spread both pools proportionally, including the favorite/offline modes.
+        total = len(remote_tracks) + len(familiar_tracks)
+        pending = []
+        rem_idx = fam_idx = 0
+        for i in range(total):
+            if fam_idx < (i + 1) * len(familiar_tracks) // total:
+                pending.append(familiar_tracks[fam_idx])
                 fam_idx += 1
+            else:
+                pending.append(remote_tracks[rem_idx])
+                rem_idx += 1
 
-        # Лёгкая защита от двух треков одного артиста подряд
-        for i in range(1, len(result) - 1):
-            prev_art = (result[i - 1].get("artist") or "").strip().lower()
-            cur_art = (result[i].get("artist") or "").strip().lower()
-            if prev_art and prev_art == cur_art:
-                for j in range(i + 1, len(result)):
-                    swap_art = (result[j].get("artist") or "").strip().lower()
-                    if swap_art != prev_art:
-                        result[i], result[j] = result[j], result[i]
-                        break
+        def artist_key(track):
+            return (track.get("artist") or "").strip().lower()
 
-        return result[:limit]
+        result = []
+        while pending and len(result) < limit:
+            counts = Counter(artist_key(t) for t in pending)
+            remaining = len(pending) - 1
+            # Leave enough other artists to separate duplicates at the end as well.
+            viable = [i for i, t in enumerate(pending) if all(
+                count - (artist == artist_key(t)) <= (remaining + (artist != artist_key(t))) // 2
+                for artist, count in counts.items()
+            )]
+            choices = viable or list(range(len(pending)))
+            recent = {(t.get("artist") or "").strip().lower() for t in result[-2:]}
+            index = next((i for i in choices if artist_key(pending[i]) not in recent), None)
+            if index is None:
+                previous = (result[-1].get("artist") or "").strip().lower() if result else ""
+                index = next((i for i in choices if artist_key(pending[i]) != previous), choices[0])
+            result.append(pending.pop(index))
+        return result
 
-    async def generate_wave(self, limit: int = 20) -> List[Dict[str, Any]]:
-        conn = get_db()
-        try:
-            # Берём последний дослушанный или лайкнутый трек для мгновенной реакции волны
-            recent = conn.execute("""
-                SELECT track_id FROM history h
-                JOIN tracks t ON t.id = h.track_id
-                WHERE h.event IN ('finish', 'like', 'play')
-                AND t.artist IS NOT NULL
-                AND LENGTH(t.title) > 2
-                ORDER BY
-                    CASE WHEN h.event IN ('finish', 'like') THEN 0 ELSE 1 END ASC,
-                    h.timestamp DESC
-                LIMIT 2
-            """).fetchall()
-            recent_ids = [int(r["track_id"]) for r in recent]
-        finally:
-            conn.close()
+    async def generate_wave(
+        self,
+        limit: int = 20,
+        activity: Optional[str] = None,
+        mood: Optional[str] = None,
+        character: Optional[str] = None,
+        language: Optional[str] = None,
+        device: Optional[str] = None,
+        shake: bool = False,
+        offline: bool = False,
+        exclude_tracks: Optional[list] = None,
+    ) -> List[Dict[str, Any]]:
+        if limit <= 0:
+            return []
+        exclusions = Exclusions(exclude_tracks or [])
 
-        # Выбираем сиды из коллекции (разные артисты)
+        def decorate(tracks):
+            known = get_known_collection_keys()
+            return [{**t, "is_discovery": track_key(t) not in known, "recommendation_version": VERSION}
+                    for t in tracks if not exclusions.contains(t)]
+        # 1. Определяем контекст (время суток, будни/выходные, устройство)
+        ctx = detect_wave_context(device=device)
+        eff_activity = activity if (activity and activity != "all") else ctx["auto_activity"]
+        eff_mood = mood if (mood and mood != "all") else ctx["auto_mood"]
+        eff_character = character if (character and character != "all") else "all"
+        eff_language = language if (language and language != "all") else "all"
+
+        # 2. Анализируем действия в текущей сессии (дослушивания, лайки, серия скипов)
+        session_sig = await asyncio.to_thread(get_realtime_session_signals, 45.0)
+        auto_shake = shake or (session_sig.get("skip_streak", 0) >= 2)
+
+        # 3. Если включён Офлайн-режим (TinyML по локальной коллекции и кэшу), мгновенно строим умную очередь
+        if offline:
+            offline_tracks = await asyncio.to_thread(
+                sample_taste_tracks,
+                limit,
+                1,
+                None,
+                eff_language,
+                True,
+                exclude_tracks,
+            )
+            offline_tracks = self._rank_tracks(
+                offline_tracks, positive_artists=session_sig.get("positive_artists") or [],
+                mood=eff_mood, activity=eff_activity,
+            )
+            return await asyncio.to_thread(decorate, self._interleave_wave([], offline_tracks, limit))
+
+        # 4. Формируем сиды: приоритет у только что дослушанных/лайкнутых треков в текущей сессии
+        session_pos_ids = session_sig.get("positive_track_ids") or []
+        if auto_shake:
+            # При встряхивании не берём последние треки сессии, а прыгаем в свежие сиды
+            session_pos_ids = []
+
         sampled_taste = await asyncio.to_thread(
             sample_taste_tracks,
-            max(limit, 10),
+            max(limit * 3, 36),
             1,
-            set(recent_ids),
+            set(session_pos_ids),
+            None,
+            False,
+            exclude_tracks,
         )
+        sampled_taste = await enrich_tracks(sampled_taste, getattr(self, "lastfm", None))
+        sampled_taste = [t for t in sampled_taste if _matches_language(t, eff_language) and not exclusions.contains(t)]
         taste_seed_ids = [int(t["id"]) for t in sampled_taste[:3]]
+        raw_seeds = session_pos_ids[:2] + taste_seed_ids
 
-        raw_seeds = recent_ids + taste_seed_ids
         if not raw_seeds:
             conn = get_db()
             try:
@@ -525,24 +785,57 @@ class WaveEngine:
 
         seeds = list(dict.fromkeys(raw_seeds))[:3]
 
-        # 1. Генерируем пул НОВЫХ рекомендаций (85% волны)
+        # 5. Определяем пропорцию новых треков в зависимости от настройки Характера («Незнакомое» / «Любимое» / «Баланс»)
+        if eff_character == "favorite":
+            remote_ratio = 0.25  # 75% любимых треков из коллекции
+        elif eff_character == "discovery":
+            remote_ratio = 0.95  # 95% совершенно новых треков
+        else:
+            remote_ratio = self.REMOTE_RATIO  # 85% новых открытий, максимум 15% знакомых (2–3 трека на 20)
+
+        max_local = round(limit * (1.0 - remote_ratio))
+        num_remote = limit - max_local
+
+        # 6. Запрашиваем новые рекомендации
+        remote_pool = []
         try:
-            remote_pool = await self.generate_candidates(seeds)
+            remote_pool = await self.generate_candidates(
+                seeds,
+                activity=eff_activity,
+                mood=eff_mood,
+                character=eff_character,
+                language=eff_language,
+                shake=auto_shake,
+                exclude_tracks=exclude_tracks,
+            )
+            remote_pool = [t for t in remote_pool if not exclusions.contains(t)]
+            # Retry once with different seeds when queue exclusions exhausted this batch.
+            alternatives = [t["id"] for t in sampled_taste if t["id"] not in seeds][:3]
+            if exclude_tracks and len(remote_pool) < num_remote and alternatives:
+                more = await self.generate_candidates(
+                    alternatives, activity=eff_activity, mood=eff_mood, character=eff_character,
+                    language=eff_language, shake=auto_shake,
+                    exclude_tracks=list(exclude_tracks) + remote_pool,
+                )
+                seen = Exclusions(list(exclude_tracks) + remote_pool)
+                for track in more:
+                    if not seen.contains(track):
+                        remote_pool.append(track)
+                        seen = Exclusions(list(exclude_tracks) + remote_pool)
         except Exception:
-            remote_pool = []
+            pass  # Preserve a successful first batch if only the retry failed.
 
-        # 2. Строго ограничиваем количество треков из «Любимого» (максимум 15% = 2–3 трека на 20 песен)
-        max_local = max(1, round(limit * (1.0 - self.REMOTE_RATIO)))  # Для limit=20 -> 3 трека
-        num_remote = max(1, limit - max_local)                        # Для limit=20 -> 17 новых треков
-
+        sampled_taste = self._rank_tracks(
+            sampled_taste, positive_artists=session_sig.get("positive_artists") or [],
+            mood=eff_mood, activity=eff_activity,
+        )
         selected_remote = remote_pool[:num_remote]
 
-        # Если внешние источники работали штатно (нашли хотя бы 6 новых треков),
-        # НЕ забиваем остаток очереди старыми треками из Любимого сверх лимита max_local!
+        # Если интернет есть и внешние рекомендации найдены, строго соблюдаем лимит max_local;
+        # если интернета нет (офлайн-фоллбэк TinyML), бесшовно заполняем очередь из локальных и закэшированных треков!
         if len(selected_remote) >= 5:
             allowed_local_count = max_local
         else:
-            # Только если интернета совсем нет (офлайн-режим), играем из локальной медиатеки
             allowed_local_count = limit - len(selected_remote)
 
         seen_keys = {
@@ -551,6 +844,8 @@ class WaveEngine:
         }
         selected_local: List[Dict[str, Any]] = []
         for loc in sampled_taste:
+            if len(selected_local) >= allowed_local_count:
+                break
             key = (str(loc.get("artist") or "").strip().lower(), str(loc.get("title") or "").strip().lower())
             if key not in seen_keys:
                 selected_local.append(loc)
@@ -558,4 +853,13 @@ class WaveEngine:
                 if len(selected_local) >= allowed_local_count:
                     break
 
-        return self._interleave_wave(selected_remote, selected_local, limit=limit)
+        # Use more discoveries when the library cannot satisfy the familiar quota.
+        for track in remote_pool[num_remote:]:
+            if len(selected_remote) + len(selected_local) >= limit:
+                break
+            key = ((track.get("artist") or "").strip().lower(), (track.get("title") or "").strip().lower())
+            if key not in seen_keys:
+                selected_remote.append(track)
+                seen_keys.add(key)
+
+        return await asyncio.to_thread(decorate, self._interleave_wave(selected_remote, selected_local, limit=limit))

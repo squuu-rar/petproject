@@ -1,3 +1,5 @@
+import { uniqueTracks } from './wave_feedback.js?v=wave-v3';
+
 class PlaybackQueue {
     constructor() {
         this.queue = [];
@@ -20,9 +22,13 @@ class PlaybackQueue {
 
     appendTracks(newTracks) {
         if (!Array.isArray(newTracks) || newTracks.length === 0) return;
-        const existing = new Set(this.queue.map(t => (t.external_id || t.path || t.id)));
-        const toAdd = newTracks.filter(t => !existing.has(t.external_id || t.path || t.id));
+        const toAdd = uniqueTracks(newTracks, this.queue);
         this.queue.push(...toAdd);
+    }
+
+    replaceUpcoming(tracks) {
+        const played = this.queue.slice(0, this.currentIndex + 1);
+        this.queue = [...played, ...uniqueTracks(tracks, played)];
     }
 
     next() {

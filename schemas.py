@@ -1,4 +1,4 @@
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from typing import Optional, Literal, List
 
 
@@ -18,6 +18,10 @@ class TrackRead(BaseModel):
     cache_path: Optional[str] = None
     liked: Optional[bool] = False
     last_accessed: Optional[float] = None
+    is_discovery: Optional[bool] = None
+    recommendation_version: Optional[str] = None
+    tags: List[str] = Field(default_factory=list)
+    detected_language: Optional[str] = None
 
 
 class AlbumRead(BaseModel):
@@ -46,8 +50,32 @@ class ArtistRead(BaseModel):
 
 class HistoryCreate(BaseModel):
     track_id: int
-    event: Literal["play", "skip", "finish", "like"]
-    elapsed_seconds: float = 0.0
+    event: Literal["play", "skip", "finish", "like", "error", "dislike", "stop"]
+    elapsed_seconds: float = Field(0.0, ge=0, le=86400, allow_inf_nan=False)
+    duration_seconds: Optional[float] = Field(None, gt=0, le=86400, allow_inf_nan=False)
+    playback_id: Optional[str] = Field(None, min_length=1, max_length=100)
+    context: Literal["wave", "list"] = "list"
+    is_discovery: bool = False
+    recommendation_version: Optional[str] = Field(None, max_length=50)
+
+
+class WaveExclusion(BaseModel):
+    id: Optional[int] = None
+    external_id: Optional[str] = Field(None, max_length=300)
+    artist: Optional[str] = Field(None, max_length=1000)
+    title: Optional[str] = Field(None, max_length=1000)
+
+
+class WaveRequest(BaseModel):
+    limit: int = Field(20, ge=1, le=50)
+    activity: Optional[str] = None
+    mood: Optional[str] = None
+    character: Optional[str] = None
+    language: Optional[str] = None
+    device: Optional[str] = None
+    shake: bool = False
+    offline: bool = False
+    exclude_tracks: List[WaveExclusion] = Field(default_factory=list, max_length=2000)
 
 
 class HistoryItemRead(BaseModel):

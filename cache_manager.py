@@ -74,7 +74,7 @@ class CacheManager:
         conn = get_db()
         try:
             row = conn.execute(
-                "SELECT cache_path, source, external_id, path FROM tracks WHERE id = ?", (track_id,)
+                "SELECT cache_path, source, external_id, path, title, artist FROM tracks WHERE id = ?", (track_id,)
             ).fetchone()
         finally:
             conn.close()
@@ -179,12 +179,36 @@ class CacheManager:
     def _download_sync(self, track_id: int, url: str) -> Optional[Path]:
         self._remove_variants(track_id)
         outtmpl = str(self.cache_dir / f"cache_{track_id}.%(ext)s")
+        is_yt = ("youtube.com" in url) or ("youtu.be" in url)
+        info = None
+
         try:
-            with yt_dlp.YoutubeDL(download_opts(outtmpl)) as ydl:
+            with yt_dlp.YoutubeDL(download_opts(outtmpl, fast_fail=is_yt)) as ydl:
                 info = ydl.extract_info(url, download=True)
-        except Exception:
+        except Exception as primary_err:
             self._remove_variants(track_id)
-            raise
+            # Если YouTube недоступен без VPN (ТСПУ/таймаут), автоматически ищем и скачиваем этот же трек через SoundCloud
+            if is_yt:
+                track_meta = self._load_track(track_id) or {}
+                artist = (track_meta.get("artist") or "").strip()
+                title = (track_meta.get("title") or "").strip()
+                sc_query = f"{artist} - {title}".strip(" -")
+                if sc_query and sc_query.lower() not in ("неизвестный исполнитель", "без названия"):
+                    try:
+                        print(f"[CacheManager] YouTube недоступен без VPN для '{sc_query}', пробуем зеркало SoundCloud...")
+                        with yt_dlp.YoutubeDL(download_opts(outtmpl, fast_fail=False)) as ydl_sc:
+                            sc_info = ydl_sc.extract_info(f"scsearch1:{sc_query}", download=True)
+                            if sc_info and "entries" in sc_info and sc_info["entries"]:
+                                info = sc_info["entries"][0]
+                            else:
+                                info = sc_info
+                    except Exception:
+                        self._remove_variants(track_id)
+                        raise primary_err
+                else:
+                    raise primary_err
+            else:
+                raise primary_err
 
         path = self._find_downloaded(track_id, info)
         if path is None or path.stat().st_size < MIN_VALID_BYTES:

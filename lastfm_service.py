@@ -31,13 +31,27 @@ class LastFMService:
     def __init__(self, api_key: Optional[str] = None):
         self.api_key = api_key or os.environ.get("LASTFM_API_KEY", "")
 
+    def get_top_tags(self, artist: str, title: Optional[str] = None) -> Optional[List[str]]:
+        params = {"method": "track.getTopTags" if title else "artist.getTopTags",
+                  "artist": artist, "autocorrect": 1}
+        if title:
+            params["track"] = title
+        data = self._sync_request(params, timeout=2.0)
+        if not data or data.get("error"):
+            return None
+        tags = (data.get("toptags") or {}).get("tag") or []
+        if isinstance(tags, dict):
+            tags = [tags]
+        return list(dict.fromkeys(str(t["name"]).strip().lower() for t in tags
+                                 if isinstance(t, dict) and t.get("name")))[:12]
+
     def _sync_request(self, params: Dict[str, Any], timeout: float = 5.0) -> Dict[str, Any]:
         if not self.api_key:
             return {}
         params["api_key"] = self.api_key
         params["format"] = "json"
         url = f"{self.BASE_URL}?{urllib.parse.urlencode(params)}"
-        req = urllib.request.Request(url, headers={"User-Agent": "MusicStreamApp/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "EchoMusicPlayer/2.0"})
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 if resp.status == 200:

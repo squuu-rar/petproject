@@ -15,7 +15,7 @@ def _clean_term(text: str) -> str:
 
 
 def _http_json(url: str, timeout: float = 5.0) -> Any:
-    req = urllib.request.Request(url, headers={"User-Agent": "MusicStreamApp/2.0 (https://lrclib.net)"})
+    req = urllib.request.Request(url, headers={"User-Agent": "EchoMusicPlayer/2.0 (https://lrclib.net)"})
     with urllib.request.urlopen(req, timeout=timeout) as resp:
         if resp.status == 200:
             return json.loads(resp.read().decode("utf-8"))

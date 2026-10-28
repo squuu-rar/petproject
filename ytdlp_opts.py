@@ -1,13 +1,9 @@
 """Единые настройки yt-dlp для поиска, определения ссылки и загрузки в кэш.
 
-Раньше они были разбросаны по файлам и расходились: кэш качал с клиентами
-android/web и повторами, а ссылка для воспроизведения определялась с настройками
-по умолчанию. Из-за этого первый запуск трека падал, а повторный (уже из кэша)
-проходил. Теперь все три места берут настройки отсюда.
-
 Переопределяется переменными окружения:
     YTDLP_YT_CLIENTS=android,web   клиенты YouTube (пусто = по умолчанию yt-dlp)
     YTDLP_NO_CHECK_CERT=0          включить проверку TLS-сертификатов
+    YTDLP_PROXY=socks5://...       опциональный прокси для yt-dlp
 """
 from __future__ import annotations
 
@@ -15,13 +11,11 @@ import os
 from typing import Any, Dict
 
 YT_PLAYER_CLIENTS = [
-    c.strip() for c in os.environ.get("YTDLP_YT_CLIENTS", "android,web").split(",") if c.strip()
+    c.strip() for c in os.environ.get("YTDLP_YT_CLIENTS", "android,ios,web").split(",") if c.strip()
 ]
 NO_CHECK_CERT = os.environ.get("YTDLP_NO_CHECK_CERT", "1").strip().lower() not in ("0", "false", "no")
+YTDLP_PROXY = os.environ.get("YTDLP_PROXY", "").strip()
 
-# Сначала «прогрессивный» звук по обычному http(s): <audio> не умеет HLS (.m3u8),
-# а SoundCloud по умолчанию часто отдаёт именно его. Если такого формата нет,
-# берём что есть: последние два варианта подстрахуют, а не заменят первый.
 AUDIO_FORMAT = "bestaudio[protocol^=http]/bestaudio/best"
 
 
@@ -30,7 +24,11 @@ def _base() -> Dict[str, Any]:
         "quiet": True,
         "no_warnings": True,
         "nocheckcertificate": NO_CHECK_CERT,
+        "source_address": "0.0.0.0",
+        "geo_bypass": True,
     }
+    if YTDLP_PROXY:
+        opts["proxy"] = YTDLP_PROXY
     if YT_PLAYER_CLIENTS:
         opts["extractor_args"] = {"youtube": {"player_client": YT_PLAYER_CLIENTS}}
     return opts
@@ -55,22 +53,22 @@ def stream_opts() -> Dict[str, Any]:
         "format": AUDIO_FORMAT,
         "noplaylist": True,
         "skip_download": True,
-        "socket_timeout": 15,
-        "retries": 3,
+        "socket_timeout": 10,
+        "retries": 2,
     })
     return opts
 
 
-def download_opts(outtmpl: str) -> Dict[str, Any]:
+def download_opts(outtmpl: str, fast_fail: bool = False) -> Dict[str, Any]:
     """Загрузка в файл кэша. Расширение подставляет yt-dlp (%(ext)s)."""
     opts = _base()
     opts.update({
         "format": AUDIO_FORMAT,
         "outtmpl": outtmpl,
         "noplaylist": True,
-        "socket_timeout": 15,
-        "retries": 10,
-        "fragment_retries": 10,
+        "socket_timeout": 8 if fast_fail else 12,
+        "retries": 1 if fast_fail else 3,
+        "fragment_retries": 1 if fast_fail else 3,
         "http_chunk_size": 5 * 1024 * 1024,
     })
     return opts

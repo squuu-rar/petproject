@@ -35,6 +35,7 @@ from db import (
     get_playlist_by_id,
     get_playlist_tracks,
     get_playlists,
+    get_realtime_session_signals,
     get_taste_profile_artists,
     get_track_by_id,
     get_tracks_paginated,
@@ -61,10 +62,12 @@ from schemas import (
     PlaylistRename,
     PrefetchRequest,
     TrackRead,
+    WaveRequest,
 )
 from search_service import LocalSearchService, RemoteSearchService, SearchOrchestrator
 from soundcloud_service import SoundCloudSearchService, is_soundcloud_url
-from wave_engine import WaveEngine
+from wave_engine import WaveEngine, classify_track_vibe, detect_wave_context
+from wave_feedback import record_event, quality_metrics
 
 BASE_DIR = Path(__file__).resolve().parent
 STATIC_DIR = BASE_DIR / "static"
@@ -165,7 +168,7 @@ def _resolve_artist_photo_fast(artist_name: str) -> Optional[str]:
 
     try:
         it_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(clean)}&entity=song&limit=1"
-        req = urllib.request.Request(it_url, headers={"User-Agent": "MusicStreamApp/2.0"})
+        req = urllib.request.Request(it_url, headers={"User-Agent": "EchoMusicPlayer/2.0"})
         with urllib.request.urlopen(req, timeout=3.0) as resp:
             if resp.status == 200:
                 data = json.loads(resp.read().decode("utf-8"))
@@ -199,7 +202,7 @@ async def lifespan(app: FastAPI):
     yield
 
 
-app = FastAPI(title="Music Player API", lifespan=lifespan)
+app = FastAPI(title="Écho", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,
@@ -211,9 +214,20 @@ app.add_middleware(
 )
 
 
+@app.middleware("http")
+async def disable_frontend_static_cache(request: Request, call_next):
+    response = await call_next(request)
+    path = request.url.path
+    if path == "/" or path == "/sw.js" or path.endswith((".js", ".css", ".html")):
+        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+        response.headers["Pragma"] = "no-cache"
+        response.headers["Expires"] = "0"
+    return response
+
+
 @app.get("/")
 def serve_index():
-    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-cache"})
+    return FileResponse(STATIC_DIR / "index.html", headers={"Cache-Control": "no-store, no-cache, must-revalidate, max-age=0"})
 
 
 @app.get("/manifest.json")
@@ -800,12 +814,80 @@ def search_tracks(
     return orchestrator.search(q)
 
 
+def _infer_device_from_request(request: Optional[Request], explicit_device: Optional[str] = None) -> str:
+    if explicit_device:
+        d = explicit_device.strip().lower()
+        if d in ("mobile", "phone", "smartphone", "ios", "android"):
+            return "mobile"
+        if d in ("desktop", "pc", "laptop"):
+            return "desktop"
+    if request is not None:
+        ua = (request.headers.get("user-agent") or "").lower()
+        if any(tok in ua for tok in ("mobile", "android", "iphone", "ipad", "ipod")):
+            return "mobile"
+    return "desktop"
+
+
+@app.get("/wave/context")
+def get_wave_context_info(
+    request: Request,
+    device: Optional[str] = Query(None),
+):
+    resolved_device = _infer_device_from_request(request, device)
+    ctx = detect_wave_context(device=resolved_device)
+    rt = get_realtime_session_signals(minutes=45.0)
+    return {
+        **ctx,
+        "realtime": {
+            "skip_streak": rt.get("skip_streak", 0),
+            "positive_artists_count": len(rt.get("positive_artists") or []),
+            "skipped_artists_count": len(rt.get("skipped_artists") or []),
+            "recent_session_artists_count": len(rt.get("recent_session_artists") or []),
+        },
+    }
+
+
 @app.get("/wave", response_model=list[TrackRead])
-async def get_wave_recommendations(limit: int = Query(20, ge=1, le=50)):
+async def get_wave_recommendations(
+    request: Request,
+    limit: int = Query(20, ge=1, le=50),
+    activity: Optional[str] = Query(None),
+    mood: Optional[str] = Query(None),
+    character: Optional[str] = Query(None),
+    language: Optional[str] = Query(None),
+    device: Optional[str] = Query(None),
+    shake: bool = Query(False),
+    offline: bool = Query(False),
+):
     global wave_engine
     if not wave_engine:
         wave_engine = WaveEngine()
-    return await wave_engine.generate_wave(limit=limit)
+    resolved_device = _infer_device_from_request(request, device)
+    return await wave_engine.generate_wave(
+        limit=limit,
+        activity=activity,
+        mood=mood,
+        character=character,
+        language=language,
+        device=resolved_device,
+        shake=shake,
+        offline=offline,
+    )
+
+
+@app.post("/wave", response_model=list[TrackRead])
+async def post_wave_recommendations(payload: WaveRequest, request: Request):
+    global wave_engine
+    if not wave_engine:
+        wave_engine = WaveEngine()
+    options = payload.model_dump()
+    options["device"] = _infer_device_from_request(request, payload.device)
+    return await wave_engine.generate_wave(**options)
+
+
+@app.get("/wave/metrics")
+def get_wave_quality(days: int = Query(30, ge=1, le=365)):
+    return quality_metrics(days)
 
 
 @app.get("/taste-profile")
@@ -946,7 +1028,7 @@ async def stream_track(track_id: int, request: Request):
 
 
 @app.post("/tracks/{track_id}/like")
-def toggle_like(track_id: int, liked: bool = Query(...)):
+def toggle_like(track_id: int, liked: bool = Query(...), playback_id: Optional[str] = Query(None, max_length=100)):
     conn = get_db()
     try:
         now = time.time()
@@ -957,10 +1039,13 @@ def toggle_like(track_id: int, liked: bool = Query(...)):
         if cur.rowcount == 0:
             raise HTTPException(status_code=404, detail="Track not found")
         if liked:
-            conn.execute(
-                "INSERT INTO history (track_id, event, elapsed_seconds, timestamp) VALUES (?, 'like', 0.0, ?)",
-                (track_id, now),
-            )
+            play = conn.execute("SELECT * FROM history WHERE playback_id=? AND track_id=? AND event='play'",
+                                (playback_id, track_id)).fetchone() if playback_id else None
+            record_event(conn, {"id": track_id}, HistoryCreate(
+                track_id=track_id, event="like", playback_id=playback_id if play else None,
+                context=play["context"] if play else "list", is_discovery=bool(play["is_discovery"]) if play else False,
+                recommendation_version=play["recommendation_version"] if play else None,
+            ))
         conn.commit()
         return {"status": "ok", "liked": liked}
     finally:
@@ -978,15 +1063,12 @@ def record_history(payload: HistoryCreate):
     if not track:
         raise HTTPException(status_code=404, detail="Track not found")
 
-    if payload.event == "skip" and payload.elapsed_seconds >= 15:
-        raise HTTPException(status_code=400, detail="Skip only accepted if elapsed_seconds < 15")
-
     conn = get_db()
     try:
-        conn.execute(
-            "INSERT INTO history (track_id, event, elapsed_seconds, timestamp) VALUES (?, ?, ?, ?)",
-            (payload.track_id, payload.event, payload.elapsed_seconds, time.time()),
-        )
+        try:
+            record_event(conn, track, payload)
+        except ValueError as error:
+            raise HTTPException(status_code=409, detail=str(error))
         conn.commit()
         return {"status": "ok"}
     finally:
@@ -1168,79 +1250,267 @@ def _detect_tailscale_ip() -> Optional[str]:
         return None
 
 
-def _read_tunnel_url() -> Optional[str]:
+def _is_tunnel_alive() -> bool:
+    global _tunnel_proc
+    if _tunnel_proc is not None and _tunnel_proc.poll() is None:
+        return True
+    for pat in ("ssh.*localhost\.run", "ssh.*pinggy", "cloudflared.*tunnel"):
+        try:
+            res = subprocess.run(
+                ["pgrep", "-f", pat],
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+                check=False,
+            )
+            if res.returncode == 0:
+                return True
+        except Exception:
+            pass
+    return False
+
+
+def _read_all_tunnel_urls() -> Dict[str, Optional[str]]:
     tunnel_file = BASE_DIR / ".tunnel_url"
-    if tunnel_file.exists():
+    ssh_log = Path("/tmp/petproject_ssh_tunnel.log")
+    cf_log = Path("/tmp/petproject_tunnel.log")
+
+    if not _is_tunnel_alive():
+        tunnel_file.unlink(missing_ok=True)
+        ssh_log.unlink(missing_ok=True)
+        cf_log.unlink(missing_ok=True)
+        return {"primary": None, "no_vpn_url": None, "cloudflare_url": None}
+
+    no_vpn_url: Optional[str] = None
+    cloudflare_url: Optional[str] = None
+
+    if ssh_log.exists():
         try:
-            url = tunnel_file.read_text(encoding="utf-8").strip()
-            if url.startswith("http"):
-                return url
+            raw = ssh_log.read_text(encoding="utf-8", errors="ignore")
+            matches = re.findall(r"https://[a-zA-Z0-9.-]+\.(?:lhr\.life|pinggy\.link|a\.pinggy\.online|serveo\.net)", raw)
+            valid = [m for m in matches if not m.endswith("admin.localhost.run")]
+            if valid:
+                no_vpn_url = valid[-1]
         except Exception:
             pass
-    log_path = Path("/tmp/petproject_tunnel.log")
-    if log_path.exists():
+
+    if cf_log.exists():
         try:
-            text = log_path.read_text(encoding="utf-8", errors="ignore")
-            matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", text)
+            raw = cf_log.read_text(encoding="utf-8", errors="ignore")
+            matches = re.findall(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com", raw)
             if matches:
-                latest = matches[-1]
-                tunnel_file.write_text(latest, encoding="utf-8")
-                return latest
+                cloudflare_url = matches[-1]
         except Exception:
             pass
-    return None
+
+    if not no_vpn_url and not cloudflare_url and tunnel_file.exists():
+        try:
+            saved = tunnel_file.read_text(encoding="utf-8").strip()
+            if saved.startswith("http"):
+                if "trycloudflare.com" in saved:
+                    cloudflare_url = saved
+                else:
+                    no_vpn_url = saved
+        except Exception:
+            pass
+
+    primary = no_vpn_url or cloudflare_url
+    if primary:
+        try:
+            tunnel_file.write_text(primary, encoding="utf-8")
+        except Exception:
+            pass
+    return {
+        "primary": primary,
+        "no_vpn_url": no_vpn_url,
+        "cloudflare_url": cloudflare_url,
+    }
 
 
 @app.get("/network-info")
 def api_get_network_info(request: Request):
     lan_ip = _detect_lan_ip()
     port = request.url.port or 8001
-    tunnel_url = _read_tunnel_url()
+    urls = _read_all_tunnel_urls()
     ts_ip = _detect_tailscale_ip()
     tailscale_url = f"http://{ts_ip}:{port}" if ts_ip else None
     cloudflared_installed = bool(shutil.which("cloudflared"))
+    ssh_installed = bool(shutil.which("ssh"))
 
     return {
         "lan_ip": lan_ip,
         "port": port,
         "lan_url": f"http://{lan_ip}:{port}",
-        "tunnel_url": tunnel_url,
+        "tunnel_url": urls["primary"],
+        "no_vpn_url": urls["no_vpn_url"],
+        "cloudflare_url": urls["cloudflare_url"],
         "tailscale_url": tailscale_url,
-        "cloudflared_installed": cloudflared_installed,
+        "cloudflared_installed": cloudflared_installed or ssh_installed,
+        "ssh_installed": ssh_installed,
         "host": request.headers.get("host", f"{lan_ip}:{port}"),
     }
 
 
 @app.post("/network-info/start-tunnel")
-async def api_start_cloudflare_tunnel(request: Request):
-    """Запускает cloudflared-туннель прямо из веб-интерфейса, если сервер был запущен через run.py."""
+async def api_start_cloudflare_tunnel(
+    request: Request,
+    force: bool = Query(False),
+    provider: str = Query("auto"),
+):
+    """Запускает прямой туннель без VPN (SSH localhost.run *.lhr.life) и резервный cloudflared (--protocol http2)."""
     global _tunnel_proc
-    existing = _read_tunnel_url()
-    if existing and _tunnel_proc and _tunnel_proc.poll() is None:
-        return {"status": "ok", "tunnel_url": existing}
+    if not force:
+        existing = _read_all_tunnel_urls()
+        if existing["primary"]:
+            return {
+                "status": "ok",
+                "tunnel_url": existing["primary"],
+                "no_vpn_url": existing["no_vpn_url"],
+                "cloudflare_url": existing["cloudflare_url"],
+            }
 
-    if not shutil.which("cloudflared"):
+    has_ssh = bool(shutil.which("ssh"))
+    has_cf = bool(shutil.which("cloudflared"))
+    if not has_ssh and not has_cf:
         raise HTTPException(
             status_code=400,
-            detail="Утилита cloudflared не установлена в системе. Установите её (например: sudo pacman -S cloudflared или sudo apt install cloudflared) или используйте ./start_remote.sh",
+            detail="Не найдены ssh или cloudflared. Используйте подключение дома по Wi-Fi.",
         )
 
     port = request.url.port or 8001
-    log_path = Path("/tmp/petproject_tunnel.log")
-    try:
-        log_fp = open(log_path, "w", encoding="utf-8")
-        _tunnel_proc = subprocess.Popen(
-            ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}", "--no-autoupdate"],
-            stdout=log_fp,
-            stderr=subprocess.STDOUT,
-        )
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Не удалось запустить cloudflared: {e}")
+    tunnel_file = BASE_DIR / ".tunnel_url"
+    ssh_log = Path("/tmp/petproject_ssh_tunnel.log")
+    cf_log = Path("/tmp/petproject_tunnel.log")
 
-    for _ in range(24):
+    if _tunnel_proc is not None and _tunnel_proc.poll() is None:
+        try:
+            _tunnel_proc.terminate()
+        except Exception:
+            pass
+
+    for pat in (f"cloudflared.*127.0.0.1:{port}", f"ssh.*127.0.0.1:{port}"):
+        try:
+            subprocess.run(["pkill", "-f", pat], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, check=False)
+        except Exception:
+            pass
+
+    tunnel_file.unlink(missing_ok=True)
+    ssh_log.unlink(missing_ok=True)
+    cf_log.unlink(missing_ok=True)
+
+    if has_ssh and provider in ("auto", "ssh", "novpn"):
+        try:
+            ssh_fp = open(ssh_log, "w", encoding="utf-8")
+            _tunnel_proc = subprocess.Popen(
+                [
+                    "ssh", "-T", "-n",
+                    "-o", "StrictHostKeyChecking=no",
+                    "-o", "UserKnownHostsFile=/dev/null",
+                    "-o", "ServerAliveInterval=30",
+                    "-o", "ConnectTimeout=10",
+                    "-R", f"80:127.0.0.1:{port}",
+                    "nokey@localhost.run",
+                ],
+                stdout=ssh_fp,
+                stderr=subprocess.STDOUT,
+            )
+        except Exception:
+            pass
+
+    if has_cf and provider in ("auto", "cloudflare"):
+        try:
+            cf_fp = open(cf_log, "w", encoding="utf-8")
+            proc = subprocess.Popen(
+                ["cloudflared", "tunnel", "--url", f"http://127.0.0.1:{port}", "--protocol", "http2", "--no-autoupdate"],
+                stdout=cf_fp,
+                stderr=subprocess.STDOUT,
+            )
+            if _tunnel_proc is None:
+                _tunnel_proc = proc
+        except Exception:
+            pass
+
+    for _ in range(28):
         await asyncio.sleep(0.5)
-        url = _read_tunnel_url()
-        if url:
-            return {"status": "ok", "tunnel_url": url}
+        urls = _read_all_tunnel_urls()
+        if urls["no_vpn_url"] or (provider == "cloudflare" and urls["cloudflare_url"]):
+            return {
+                "status": "ok",
+                "tunnel_url": urls["primary"],
+                "no_vpn_url": urls["no_vpn_url"],
+                "cloudflare_url": urls["cloudflare_url"],
+            }
 
-    raise HTTPException(status_code=504, detail="Туннель запущен, но ссылка ещё формируется — обновите окно через пару секунд")
+    urls = _read_all_tunnel_urls()
+    if urls["primary"]:
+        return {
+            "status": "ok",
+            "tunnel_url": urls["primary"],
+            "no_vpn_url": urls["no_vpn_url"],
+            "cloudflare_url": urls["cloudflare_url"],
+        }
+
+    raise HTTPException(status_code=504, detail="Туннель запускается — нажмите ещё раз через 2 секунды")
+
+
+COVERS_CACHE_DIR = CACHE_DIR / "covers"
+COVERS_CACHE_DIR.mkdir(parents=True, exist_ok=True)
+
+
+def _fetch_cover_bytes_sync(url: str, query_fallback: str = "") -> Optional[tuple[bytes, str]]:
+    """Скачивает обложку на сервере (с кэшем на диске). Если ytimg.com недоступен без VPN,
+    автоматически подбирает обложку через открытый каталог iTunes API."""
+    cache_key = hashlib.md5(f"{url}|{query_fallback}".encode("utf-8", errors="ignore")).hexdigest()
+    cached_file = COVERS_CACHE_DIR / f"{cache_key}.jpg"
+    if cached_file.is_file() and cached_file.stat().st_size > 256:
+        return cached_file.read_bytes(), "image/jpeg"
+
+    if url and url.startswith(("http://", "https://")):
+        try:
+            req = urllib.request.Request(url, headers={"User-Agent": "Mozilla/5.0"})
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                if resp.status == 200:
+                    data = resp.read()
+                    if len(data) > 256:
+                        cached_file.write_bytes(data)
+                        ctype = resp.headers.get("Content-Type") or "image/jpeg"
+                        return data, ctype
+        except Exception:
+            pass
+
+    if query_fallback.strip():
+        try:
+            it_url = f"https://itunes.apple.com/search?term={urllib.parse.quote(query_fallback.strip())}&entity=song&limit=1"
+            req = urllib.request.Request(it_url, headers={"User-Agent": "EchoMusicPlayer/2.0"})
+            with urllib.request.urlopen(req, timeout=2.5) as resp:
+                if resp.status == 200:
+                    payload = json.loads(resp.read().decode("utf-8"))
+                    results = payload.get("results") or []
+                    if results and results[0].get("artworkUrl100"):
+                        art_url = results[0]["artworkUrl100"].replace("100x100bb", "500x500bb")
+                        req_art = urllib.request.Request(art_url, headers={"User-Agent": "Mozilla/5.0"})
+                        with urllib.request.urlopen(req_art, timeout=2.5) as art_resp:
+                            if art_resp.status == 200:
+                                data = art_resp.read()
+                                if len(data) > 256:
+                                    cached_file.write_bytes(data)
+                                    return data, "image/jpeg"
+        except Exception:
+            pass
+
+    return None
+
+
+@app.get("/proxy/image")
+async def proxy_external_image(
+    url: str = Query(""),
+    q: str = Query(""),
+):
+    res = await asyncio.to_thread(_fetch_cover_bytes_sync, url, q)
+    if res is not None:
+        data, media_type = res
+        return Response(
+            content=data,
+            media_type=media_type,
+            headers={"Cache-Control": "public, max-age=86400"},
+        )
+    return FileResponse(STATIC_DIR / "img" / "default-cover.svg", media_type="image/svg+xml")
