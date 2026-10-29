@@ -1,9 +1,9 @@
 import PlaybackQueue from './playback_queue.js?v=wave-v3';
-import { ListeningTracker, uniqueTracks, WaveRevision, WaveRequests, playbackId } from './wave_feedback.js?v=wave-v3';
+import { ListeningTracker, uniqueTracks, WaveRevision, WaveRequests, playbackId, requestWave } from './wave_feedback.js?v=wave-v3';
 
 document.addEventListener('DOMContentLoaded', () => {
     const DEFAULT_COVER = '/static/img/default-cover.svg';
-    const WAVE_STATUS_IDLE = 'Поток подстраивается под ваши лайки и пропуски';
+    const WAVE_STATUS_IDLE = 'Подстраивается под вас';
 
     const tracklist = document.getElementById('tracklist');
     const viewTitle = document.getElementById('view-title');
@@ -59,13 +59,16 @@ document.addEventListener('DOMContentLoaded', () => {
     let queueListRef = null;
     let visibleTracks = [];
     const waveRevision = new WaveRevision();
+    let waveSession = 0;
+    let waveStartPending = false;
+    let waveStartController = null;
     let feedbackSession = null;
     let feedbackWrites = Promise.resolve(true);
     let playbackAudible = false;
     const waveRequests = new WaveRequests({
         queue: playbackQueue, revision: waveRevision, mode: () => queueMode,
         fetch: fetchWave, before: () => feedbackWrites,
-        status: message => setWaveStatus(message || WAVE_STATUS_IDLE)
+        status: message => { setWaveStatus(message || WAVE_STATUS_IDLE); renderWaveUpcoming(); }
     });
     let autoSkipTimer = null;
     let searchDebounceTimer = null;
@@ -297,10 +300,25 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
-    async function fetchJson(url, options) {
-        const res = await fetch(url, options);
-        if (!res.ok) throw new Error(`HTTP ${res.status}`);
-        return res.json();
+    async function fetchJson(url, options = {}) {
+        const { timeoutMs = 0, signal, ...init } = options;
+        const controller = timeoutMs ? new AbortController() : null;
+        const timer = controller ? setTimeout(() => controller.abort(), timeoutMs) : null;
+        const abort = () => controller?.abort(signal.reason);
+        if (signal?.aborted) abort();
+        else signal?.addEventListener('abort', abort, { once: true });
+        try {
+            const res = await fetch(url, { ...init, signal: controller?.signal || signal });
+            if (!res.ok) {
+                const error = new Error(`HTTP ${res.status}`);
+                error.status = res.status;
+                throw error;
+            }
+            return await res.json();
+        } finally {
+            if (timer) clearTimeout(timer);
+            signal?.removeEventListener('abort', abort);
+        }
     }
 
     function fetchTracks(params = {}) {
@@ -343,11 +361,11 @@ document.addEventListener('DOMContentLoaded', () => {
             ]
         },
         character: {
-            title: 'Характер',
+            title: 'Что слушать',
             icon: 'fa-compass',
             options: [
                 { id: 'all', label: 'Баланс' },
-                { id: 'discovery', label: 'Незнакомое' },
+                { id: 'discovery', label: 'Больше открытий' },
                 { id: 'popular', label: 'Популярное' },
                 { id: 'favorite', label: 'Любимое' }
             ]
@@ -479,157 +497,129 @@ document.addEventListener('DOMContentLoaded', () => {
         if (idleScreen) {
             idleScreen.dataset.vibe = target;
         }
-        const badgeEl = document.getElementById('wave-vibe-badge');
-        if (badgeEl) {
-            const meta = VIBE_META[target];
-            badgeEl.innerHTML = `<i class="fas ${meta.icon}"></i><span>${meta.label}</span>`;
-        }
+        updateWaveContextBadge();
     }
 
-    function getActiveWaveFilterSummary() {
-        const parts = [];
-        for (const [key, def] of Object.entries(WAVE_FILTER_DEFS)) {
-            const val = waveSettings[key];
-            if (val && val !== 'all') {
-                const opt = def.options.find(o => o.id === val);
-                if (opt) parts.push({ key, label: opt.label });
-            }
-        }
-        if (waveSettings.offline || !navigator.onLine) {
-            parts.push({ key: 'offline', label: '⚡ Офлайн (TinyML)' });
-        }
-        return parts;
+    function waveSummary() {
+        const time = (waveContextData || buildClientFallbackContext()).time_label.toLowerCase();
+        const periods = ['утро', 'день', 'вечер', 'ночь'];
+        const names = {
+            calm: ['Спокойное утро', 'Спокойный день', 'Спокойный вечер', 'Спокойная ночь'],
+            energy: ['Бодрое утро', 'Энергичный день', 'Энергичный вечер', 'Энергичная ночь'],
+            joy: ['Светлое утро', 'Лёгкий день', 'Лёгкий вечер', 'Лёгкая ночь'],
+            melancholy: ['Атмосферное утро', 'Атмосферный день', 'Атмосферный вечер', 'Атмосферная ночь']
+        };
+        const choice = { all: 'Знакомое и новое', discovery: 'Больше открытий', popular: 'Популярное', favorite: 'Больше любимого' };
+        const moment = (names[currentWaveVibe] || names.calm)[periods.indexOf(time)] || 'Ваш поток';
+        return `${moment} · ${waveSettings.offline || !navigator.onLine ? 'Только скачанное' : choice[waveSettings.character] || choice.all}`;
     }
 
     function renderWaveSettingsToolbarHtml() {
-        const ctx = waveContextData || buildClientFallbackContext();
-        const vibeMeta = VIBE_META[currentWaveVibe] || VIBE_META.calm;
-        const activeFilters = getActiveWaveFilterSummary();
-        const isOfflineActive = Boolean(waveSettings.offline || !navigator.onLine);
-
-        const groupsHtml = Object.entries(WAVE_FILTER_DEFS).map(([groupKey, def]) => {
-            const curVal = waveSettings[groupKey] || 'all';
-            const chips = def.options.map(opt => `
-                <button type="button" class="wave-chip ${curVal === opt.id ? 'active' : ''}"
-                        data-wave-group="${groupKey}" data-wave-val="${opt.id}">
-                    ${escapeHtml(opt.label)}
-                </button>
-            `).join('');
-            return `
-                <div class="wave-filter-group">
-                    <span class="wave-filter-label"><i class="fas ${def.icon}"></i>${escapeHtml(def.title)}</span>
-                    <div class="wave-filter-chips">${chips}</div>
-                </div>
-            `;
-        }).join('');
-
-        const activeBadgesHtml = activeFilters.map(item => `
-            <span class="wave-active-pill" data-reset-group="${item.key}" title="Нажмите, чтобы сбросить фильтр">
-                ${escapeHtml(item.label)} <i class="fas fa-xmark"></i>
-            </span>
-        `).join('');
-
-        return `
-            <div class="wave-Personal-bar" id="wave-personal-bar">
-                <div class="wave-context-row">
-                    <span class="wave-context-pill" id="wave-context-pill" title="Учёт контекста: день недели, время суток и устройство">
-                        <i class="fas fa-sparkles"></i>
-                        <span id="wave-context-text">${escapeHtml(ctx.context_hint)}</span>
-                    </span>
-                    <span class="wave-vibe-badge" id="wave-vibe-badge" title="Цвет волны подстраивается под характер треков">
-                        <i class="fas ${vibeMeta.icon}"></i>
-                        <span>${escapeHtml(vibeMeta.label)}</span>
-                    </span>
-                    <button type="button" class="wave-settings-toggle ${waveDrawerOpen ? 'active' : ''}" id="wave-settings-toggle">
-                        <i class="fas fa-sliders"></i>
-                        <span>Настроить волну</span>
-                        ${activeFilters.length > 0 ? `<span class="wave-settings-count">${activeFilters.length}</span>` : ''}
-                    </button>
-                </div>
-                ${activeFilters.length > 0 ? `<div class="wave-active-row">${activeBadgesHtml}</div>` : ''}
-                <div class="wave-settings-drawer" id="wave-settings-drawer" ${waveDrawerOpen ? '' : 'hidden'}>
-                    ${groupsHtml}
-                    <div class="wave-filter-group wave-filter-group--footer">
-                        <button type="button" class="wave-chip wave-chip--offline ${isOfflineActive ? 'active' : ''}" id="wave-offline-toggle"
-                                title="Офлайн-режим (TinyML): подбор музыки без интернета по кэшу и локальной медиатеке">
-                            <i class="fas fa-bolt"></i>
-                            <span>Офлайн-режим (TinyML)</span>
-                        </button>
-                        <button type="button" class="ghost-btn wave-reset-btn" id="wave-reset-filters">
-                            Сбросить настройки
-                        </button>
-                    </div>
-                </div>
-            </div>
-        `;
+        return `<div class="wave-Personal-bar" id="wave-personal-bar">
+            <p class="wave-summary" id="wave-context-text">${escapeHtml(waveSummary())}</p>
+            <button type="button" class="wave-settings-toggle" id="wave-settings-toggle"
+                aria-haspopup="dialog" aria-controls="wave-settings-panel" aria-expanded="${waveDrawerOpen}">
+                <i class="fas fa-sliders" aria-hidden="true"></i><span>Настроить</span>
+            </button>
+        </div>`;
     }
 
     function updateWaveContextBadge() {
-        const textEl = document.getElementById('wave-context-text');
-        if (textEl) {
-            const ctx = waveContextData || buildClientFallbackContext();
-            textEl.textContent = ctx.context_hint;
+        const summary = document.getElementById('wave-context-text');
+        if (summary) summary.textContent = waveSummary();
+        const context = document.getElementById('wave-settings-context');
+        if (context) context.textContent = (waveContextData || buildClientFallbackContext()).context_hint;
+    }
+
+    function syncWaveSettingsPanel() {
+        const panel = document.getElementById('wave-settings-panel');
+        if (!panel) return;
+        panel.querySelectorAll('[data-wave-group]').forEach(btn => {
+            const active = waveSettings[btn.dataset.waveGroup] === btn.dataset.waveVal;
+            btn.classList.toggle('active', active);
+            btn.setAttribute('aria-pressed', String(active));
+        });
+        const offline = panel.querySelector('#wave-offline-toggle');
+        const active = waveSettings.offline || !navigator.onLine;
+        offline.classList.toggle('active', active);
+        offline.setAttribute('aria-pressed', String(active));
+        offline.disabled = !navigator.onLine;
+        panel.querySelector('#wave-download-note').textContent = navigator.onLine
+            ? 'Скачанные треки и музыка с этого устройства.' : 'Нет сети. Доступна музыка, сохранённая на этом устройстве.';
+        panel.querySelector('#wave-copy-current').disabled = !currentlyPlayingTrack;
+        updateWaveContextBadge();
+    }
+
+    function openWaveSettings() {
+        let panel = document.getElementById('wave-settings-panel');
+        if (!panel) {
+            panel = document.createElement('dialog');
+            panel.id = 'wave-settings-panel';
+            panel.className = 'wave-settings-panel';
+            panel.setAttribute('aria-labelledby', 'wave-settings-heading');
+            const groups = Object.entries(WAVE_FILTER_DEFS).map(([key, def]) => `
+                <fieldset class="wave-filter-group"><legend>${escapeHtml(def.title)}</legend>
+                    <div class="wave-filter-chips">${def.options.map(opt => `
+                        <button type="button" class="wave-chip" data-wave-group="${key}" data-wave-val="${opt.id}" aria-pressed="false">${escapeHtml(opt.label)}</button>
+                    `).join('')}</div>
+                </fieldset>`).join('');
+            panel.innerHTML = `
+                <header class="wave-panel-header"><div><p class="wave-panel-eyebrow">ВАШ ПОТОК</p><h2 id="wave-settings-heading">Настроить волну</h2></div>
+                    <button type="button" class="wave-panel-close" aria-label="Закрыть настройки" autofocus><i class="fas fa-xmark" aria-hidden="true"></i></button></header>
+                <div class="wave-panel-body">
+                    <p class="wave-panel-intro">Выберите, что хочется услышать. Настройки изменят следующие треки.</p>
+                    ${groups}
+                    <section class="wave-download-setting"><button type="button" class="wave-chip" id="wave-offline-toggle" aria-pressed="false"><i class="fas fa-download" aria-hidden="true"></i> Только скачанное</button>
+                        <p id="wave-download-note"></p></section>
+                    <div class="wave-context-detail"><span>Сейчас учитываем</span><p id="wave-settings-context"></p></div>
+                    <button type="button" class="ghost-btn wave-copy-current" id="wave-copy-current">Скопировать название трека</button>
+                </div>
+                <footer class="wave-panel-footer"><button type="button" class="ghost-btn" id="wave-reset-filters">Сбросить</button><button type="button" class="key" id="wave-settings-done">Готово</button></footer>`;
+            document.body.appendChild(panel);
+            const close = () => panel.close();
+            panel.querySelector('.wave-panel-close').addEventListener('click', close);
+            panel.querySelector('#wave-copy-current').addEventListener('click', copyCurrentTrack);
+            panel.querySelector('#wave-settings-done').addEventListener('click', close);
+            panel.addEventListener('click', e => {
+                const rect = panel.getBoundingClientRect();
+                if (e.target === panel && (e.clientX < rect.left || e.clientX > rect.right || e.clientY < rect.top || e.clientY > rect.bottom)) close();
+            });
+            panel.addEventListener('close', () => {
+                waveDrawerOpen = false;
+                document.body.classList.remove('wave-settings-open');
+                const toggle = document.getElementById('wave-settings-toggle');
+                toggle?.setAttribute('aria-expanded', 'false');
+                toggle?.focus({ preventScroll: true });
+            });
+            panel.querySelectorAll('[data-wave-group]').forEach(btn => btn.addEventListener('click', () => {
+                waveSettings[btn.dataset.waveGroup] = btn.dataset.waveVal;
+                applyWaveSettings();
+            }));
+            panel.querySelector('#wave-offline-toggle').addEventListener('click', () => {
+                waveSettings.offline = !waveSettings.offline;
+                applyWaveSettings();
+            });
+            panel.querySelector('#wave-reset-filters').addEventListener('click', () => {
+                waveSettings = { activity: 'all', mood: 'all', character: 'all', language: 'all', offline: false };
+                applyWaveSettings();
+            });
         }
+        waveDrawerOpen = true;
+        syncWaveSettingsPanel();
+        document.getElementById('wave-settings-toggle')?.setAttribute('aria-expanded', 'true');
+        document.body.classList.add('wave-settings-open');
+        if (!panel.open) panel.showModal();
+    }
+
+    function applyWaveSettings() {
+        saveWaveSettings();
+        applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
+        syncWaveSettingsPanel();
+        reloadWaveWithCurrentSettings();
     }
 
     function bindWaveSettingsEvents() {
-        const bar = document.getElementById('wave-personal-bar');
-        if (!bar) return;
-
-        const toggleBtn = document.getElementById('wave-settings-toggle');
-        const drawer = document.getElementById('wave-settings-drawer');
-        if (toggleBtn && drawer) {
-            toggleBtn.addEventListener('click', (e) => {
-                e.stopPropagation();
-                requestMotionPermissionIfNeeded();
-                waveDrawerOpen = !waveDrawerOpen;
-                drawer.hidden = !waveDrawerOpen;
-                toggleBtn.classList.toggle('active', waveDrawerOpen);
-            });
-        }
-
-        bar.querySelectorAll('[data-wave-group]').forEach(btn => {
-            btn.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const group = btn.dataset.waveGroup;
-                const val = btn.dataset.waveVal;
-                if (!group || !val) return;
-                waveSettings[group] = (waveSettings[group] === val && val !== 'all') ? 'all' : val;
-                saveWaveSettings();
-                applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
-                await reloadWaveWithCurrentSettings();
-            });
-        });
-
-        bar.querySelectorAll('[data-reset-group]').forEach(pill => {
-            pill.addEventListener('click', async (e) => {
-                e.stopPropagation();
-                const key = pill.dataset.resetGroup;
-                if (key === 'offline') waveSettings.offline = false;
-                else if (key && waveSettings[key]) waveSettings[key] = 'all';
-                saveWaveSettings();
-                applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
-                await reloadWaveWithCurrentSettings();
-            });
-        });
-
-        document.getElementById('wave-offline-toggle')?.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            waveSettings.offline = !waveSettings.offline;
-            saveWaveSettings();
-            showToast(waveSettings.offline
-                ? '⚡ Включён офлайн-режим (TinyML): играем из кэша и медиатеки'
-                : '🌐 Онлайн-поток «Моей волны» активен');
-            await reloadWaveWithCurrentSettings();
-        });
-
-        document.getElementById('wave-reset-filters')?.addEventListener('click', async (e) => {
-            e.stopPropagation();
-            waveSettings = { activity: 'all', mood: 'all', character: 'all', language: 'all', offline: false };
-            saveWaveSettings();
-            applyWaveVibe(computeTrackVibe(currentlyPlayingTrack));
-            await reloadWaveWithCurrentSettings();
-        });
+        document.getElementById('wave-settings-toggle')?.addEventListener('click', openWaveSettings);
     }
 
     async function fetchWave(limit, extra = {}) {
@@ -640,22 +630,9 @@ document.addEventListener('DOMContentLoaded', () => {
         const payload = { ...waveSettings, limit: limit || 20, device: detectClientDeviceType(),
             shake: Boolean(extra.shake), offline: Boolean(extra.offline ?? (waveSettings.offline || !navigator.onLine)),
             exclude_tracks: excluded };
-        const request = async () => {
-            const data = await fetchJson('/wave', {
-                method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload)
-            });
-            if (!Array.isArray(data)) throw new Error('Волна вернула не список');
-            return uniqueTracks(data, playbackQueue.queue);
-        };
-        try {
-            return await request();
-        } catch (error) {
-            if (!payload.offline) {
-                payload.offline = true;
-                return await request();
-            }
-            throw error;
-        }
+        const data = await requestWave(fetchJson, payload, { signal: extra.signal });
+        if (!Array.isArray(data)) throw new Error('Волна вернула не список');
+        return uniqueTracks(data, playbackQueue.queue);
     }
 
     function toggleLike(trackId, isLiked) {
@@ -671,7 +648,7 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
-    function sendHistory(trackId, event, elapsedSeconds = 0, session = feedbackSession) {
+    function sendHistory(trackId, event, elapsedSeconds = 0, session = feedbackSession, beacon = false) {
         if (!trackId || Number(trackId) < 1) return Promise.resolve(false);
         const duration = Number.isFinite(audioPlayer.duration) && audioPlayer.duration > 0
             ? audioPlayer.duration : session?.track.duration;
@@ -680,19 +657,22 @@ document.addEventListener('DOMContentLoaded', () => {
             playback_id: session?.id || null, context: session?.context || 'list',
             is_discovery: Boolean(session?.track.is_discovery),
             recommendation_version: session?.track.recommendation_version || null };
+        if (beacon && navigator.sendBeacon?.('/history', new Blob([JSON.stringify(payload)], { type: 'application/json' }))) {
+            return Promise.resolve(true);
+        }
         feedbackWrites = feedbackWrites.then(() => fetchJson('/history', {
             method: 'POST', headers: { 'Content-Type': 'application/json' },
-            body: JSON.stringify(payload), keepalive: true
+            body: JSON.stringify(payload), keepalive: true, timeoutMs: 5000
         })).then(() => true).catch(error => { console.warn('История не сохранена:', error); return false; });
         return feedbackWrites;
     }
 
-    function finishFeedback(event = 'stop') {
+    function finishFeedback(event = 'stop', beacon = false) {
         const session = feedbackSession;
         if (!session || session.done) return feedbackWrites;
         sampleListening();
         session.done = true;
-        return sendHistory(session.track.id, event, session.tracker.seconds, session);
+        return sendHistory(session.track.id, event, session.tracker.seconds, session, beacon);
     }
 
     const registering = new WeakMap();
@@ -887,7 +867,7 @@ document.addEventListener('DOMContentLoaded', () => {
         if (waveEls) waveEls.status.textContent = text;
     }
 
-    function renderWaveIdle({ loading = false } = {}) {
+    function renderWaveIdle({ loading = false, error = '' } = {}) {
         waveEls = null;
         if (viewTitle) viewTitle.textContent = '';
         if (viewMeta) viewMeta.textContent = '';
@@ -905,24 +885,26 @@ document.addEventListener('DOMContentLoaded', () => {
                     <div class="deck-info">
                         <p class="eyebrow"><span class="eyebrow-dot"></span>Бесконечный умный поток</p>
                         <h2 class="deck-title deck-title--idle">Моя волна</h2>
-                        <p class="deck-note">${loading
-                            ? 'Анализирую историю, контекст и выбранные настройки…'
-                            : 'Анализирует прослушивания до конца, скипы и лайки, учитывает время суток и устройство, меняет оттенок под характер треков и работает даже офлайн (TinyML).'}</p>
+                        <p class="deck-note" id="wave-loading-note" aria-live="polite" ${error ? 'role="alert"' : ''}>${error ? escapeHtml(error) : loading
+                            ? 'Ищем треки под ваше настроение.'
+                            : 'Любимая музыка и новые открытия. С каждым лайком волна становится ближе к вам.'}</p>
                         ${renderWaveSettingsToolbarHtml()}
                         <div class="deck-keys">
                             <button id="btn-wave-start" class="key key--primary key--start" title="Включить волну" ${loading ? 'disabled' : ''}>
                                 ${loading
-                                    ? '<i class="fas fa-spinner fa-spin"></i>'
+                                    ? '<i class="fas fa-spinner fa-spin" aria-hidden="true"></i><span>Подбираем музыку</span>'
                                     : '<i class="fas fa-play"></i><span>Запустить поток</span>'}
                             </button>
                             <button id="btn-wave-idle-shake" class="key" title="Встряхнуть Мою волну — резко сменить вектор рекомендаций" ${loading ? 'disabled' : ''}>
                                 <i class="fas fa-shuffle"></i><span>Встряхнуть</span>
                             </button>
                         </div>
+                        <div class="wave-retry-slot"><button type="button" class="ghost-btn" id="wave-retry" hidden>Попробовать ещё раз</button></div>
                     </div>
                 </div>
             </div>
         `;
+        document.getElementById('wave-retry')?.addEventListener('click', () => initWavePlayback({ retry: true }));
         bindWaveSettingsEvents();
         refreshWaveContext();
         document.getElementById('btn-wave-start')?.addEventListener('click', () => {
@@ -935,11 +917,23 @@ document.addEventListener('DOMContentLoaded', () => {
         });
     }
 
+    function copyCurrentTrack() {
+        if (!currentlyPlayingTrack) return;
+        const text = `${currentlyPlayingTrack.artist || 'Неизвестный исполнитель'} — ${currentlyPlayingTrack.title || 'Без названия'}`;
+        const done = () => showToast(`Скопировано: ${text}`);
+        if (navigator.clipboard && navigator.clipboard.writeText) {
+            navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
+        } else {
+            showToast(text);
+        }
+    }
+
     function mountWaveScreen() {
         if (waveEls && waveEls.screen.isConnected) return;
         const initVibe = computeTrackVibe(currentlyPlayingTrack);
         tracklist.innerHTML = `
             <div class="wave-screen" data-vibe="${initVibe}">
+                <img class="wave-art-glow" id="wave-art-glow" alt="" aria-hidden="true" src="${DEFAULT_COVER}">
                 <div class="wave-grid"></div>
                 <div class="deck">
                     <div class="vinyl-wrap">
@@ -958,6 +952,7 @@ document.addEventListener('DOMContentLoaded', () => {
                         <h2 class="deck-title" id="wave-title"></h2>
                         <p class="deck-artist clickable-artist" id="wave-artist" tabindex="0" role="button" title="Открыть карточку исполнителя"></p>
                         <p class="deck-meta" id="wave-meta"></p>
+                        <p class="wave-reason" id="wave-reason" hidden></p>
 
                         ${renderWaveSettingsToolbarHtml()}
 
@@ -985,9 +980,8 @@ document.addEventListener('DOMContentLoaded', () => {
                                 </div>
                             </div>
                             <button id="wave-dislike-btn" class="key" title="Не нравится — пропустить и перестроить поток"><i class="fas fa-ban"></i><span>Не моё</span></button>
-                            <button id="wave-like-btn" class="key" title="Нравится"><i class="far fa-heart"></i><span>В любимое</span></button>
+                            <button id="wave-like-btn" class="key" title="Нравится"><i class="far fa-heart"></i><span>Нравится</span></button>
                             <button id="wave-lyrics-btn" class="key key--icon" title="Текст песни (караоке)" aria-label="Текст песни"><i class="fas fa-microphone-lines"></i></button>
-                            <button id="wave-copy-btn" class="key key--icon" title="Скопировать «Артист — Название»" aria-label="Скопировать название"><i class="far fa-copy"></i></button>
                         </div>
 
                         <div class="deck-foot">
@@ -997,6 +991,10 @@ document.addEventListener('DOMContentLoaded', () => {
                             </button>
                         </div>
                     </div>
+                    <section class="wave-upcoming" aria-labelledby="wave-upcoming-heading">
+                        <div class="wave-upcoming-header"><h3 id="wave-upcoming-heading">Далее</h3><span>В вашей волне</span></div>
+                        <ol id="wave-upcoming-list"></ol>
+                    </section>
                 </div>
             </div>
         `;
@@ -1025,6 +1023,10 @@ document.addEventListener('DOMContentLoaded', () => {
         };
 
         bindImgFallback(waveEls.cover);
+        waveEls.cover.addEventListener('load', () => {
+            const glow = document.getElementById('wave-art-glow');
+            if (glow) glow.src = waveEls.cover.src;
+        });
         bindSeek(waveEls.progressTrack);
         bindWaveSettingsEvents();
         refreshWaveContext();
@@ -1049,24 +1051,15 @@ document.addEventListener('DOMContentLoaded', () => {
             setAppVolume(audioPlayer.volume + delta);
         }, { passive: false });
         $('wave-lyrics-btn').addEventListener('click', () => toggleLyricsOverlay());
-        $('wave-copy-btn').addEventListener('click', () => {
-            if (!currentlyPlayingTrack) return;
-            const text = `${currentlyPlayingTrack.artist || 'Неизвестный исполнитель'} — ${currentlyPlayingTrack.title || 'Без названия'}`;
-            const done = () => showToast(`Скопировано: ${text}`);
-            if (navigator.clipboard && navigator.clipboard.writeText) {
-                navigator.clipboard.writeText(text).then(done).catch(() => showToast(text));
-            } else {
-                showToast(text);
-            }
-        });
         waveEls.like.addEventListener('click', () => applyLike(currentlyPlayingTrack));
-        $('wave-dislike-btn').addEventListener('click', async () => {
-            const token = playToken;
-            const saved = await finishFeedback('dislike');
-            if (token !== playToken) return;
+        $('wave-dislike-btn').addEventListener('click', () => {
+            const session = waveSession;
+            const saved = finishFeedback('dislike');
             sessionSkipStreak += 1;
-            if (saved) await refreshUpcomingWaveOnSkipStreak(true);
-            if (token === playToken) nextTrack(false);
+            saved.then(ok => {
+                if (ok && session === waveSession && queueMode === 'wave') refreshUpcomingWaveOnSkipStreak(true);
+            });
+            nextTrack(false);
         });
         $('wave-shake-btn').addEventListener('click', () => {
             requestMotionPermissionIfNeeded();
@@ -1089,6 +1082,17 @@ document.addEventListener('DOMContentLoaded', () => {
         }
     }
 
+    function renderWaveUpcoming() {
+        const list = document.getElementById('wave-upcoming-list');
+        if (!list || queueMode !== 'wave') return;
+        const next = playbackQueue.queue.slice(playbackQueue.index + 1, playbackQueue.index + 4);
+        list.innerHTML = next.length ? next.map(t => `<li>
+            <img src="${escapeHtml(proxyCoverUrl(t.cover_path || DEFAULT_COVER))}" alt="" loading="lazy" referrerpolicy="no-referrer">
+            <div><span class="wave-next-title">${escapeHtml(t.title || 'Без названия')}</span><span class="wave-next-artist">${escapeHtml(t.artist || 'Неизвестный исполнитель')}</span></div>
+        </li>`).join('') : '<li class="wave-next-empty">Подбираем продолжение…</li>';
+        list.querySelectorAll('img').forEach(bindImgFallback);
+    }
+
     function updateWaveScreen() {
         const t = currentlyPlayingTrack;
         if (!t || !waveEls) return;
@@ -1103,6 +1107,10 @@ document.addEventListener('DOMContentLoaded', () => {
         waveEls.title.dataset.size = title.length > 44 ? 'xl' : (title.length > 22 ? 'l' : 'm');
         waveEls.artist.textContent = t.artist || 'Неизвестный исполнитель';
         waveEls.meta.textContent = [t.album, t.year].filter(Boolean).join(' · ');
+        const reason = document.getElementById('wave-reason');
+        reason.textContent = t.liked ? 'Из ваших любимых' : t.recommendation_reason || '';
+        reason.hidden = !reason.textContent;
+        renderWaveUpcoming();
         waveEls.counter.textContent = '№ ' + String(Math.max(playbackQueue.index, 0) + 1).padStart(3, '0');
 
         const vibe = computeTrackVibe(t);
@@ -1136,22 +1144,11 @@ document.addEventListener('DOMContentLoaded', () => {
     }
 
     async function reloadWaveWithCurrentSettings() {
-        const revision = waveRevision.invalidate();
         refreshWaveToolbarDOM();
-        if (queueMode === 'wave' && currentlyPlayingTrack) {
-            setWaveStatus('Перестраиваю поток под выбранные настройки…');
-            try {
-                const tracks = await fetchWave(20);
-                if (!waveRevision.accepts(revision, queueMode)) return;
-                if (tracks.length > 0) {
-                    playbackQueue.setQueue(tracks);
-                    await playTrack(0, { force: true });
-                    setWaveStatus('Поток обновлён под ваши фильтры');
-                }
-            } catch (e) {
-                console.error('Ошибка обновления фильтров волны:', e);
-                setWaveStatus(WAVE_STATUS_IDLE);
-            }
+        if (waveStartPending) {
+            await initWavePlayback({ retry: true });
+        } else if (queueMode === 'wave' && currentlyPlayingTrack) {
+            await waveRequests.refresh(false);
         }
     }
 
@@ -1159,16 +1156,29 @@ document.addEventListener('DOMContentLoaded', () => {
         return waveRequests.refresh(shake).then(() => { sessionSkipStreak = 0; });
     }
 
-    async function initWavePlayback({ shake = false } = {}) {
+    async function initWavePlayback({ shake = false, retry = false } = {}) {
+        if (waveStartPending && !retry) return;
+        waveStartController?.abort();
+        const controller = new AbortController();
+        waveStartController = controller;
+        waveStartPending = true;
+        waveSession += 1;
         const revision = waveRevision.invalidate();
-        if (currentView === 'wave' && !currentlyPlayingTrack) renderWaveIdle({ loading: true });
-        setWaveStatus(shake ? 'Встряхиваем Мою волну — ищем свежий вектор…' : 'Изучаю звучание и контекст…');
+        if (currentView === 'wave' && !(queueMode === 'wave' && currentlyPlayingTrack)) renderWaveIdle({ loading: true });
+        setWaveStatus('Подбираем музыку…');
+        const slowTimer = setTimeout(() => {
+            if (waveStartController !== controller || currentView !== 'wave') return;
+            const note = document.getElementById('wave-loading-note');
+            if (note) note.textContent = 'Подбор занимает дольше обычного. Можно попробовать ещё раз.';
+            const retryButton = document.getElementById('wave-retry');
+            if (retryButton) retryButton.hidden = false;
+            else setWaveStatus('Подбор занимает дольше обычного. Музыка продолжает играть.');
+        }, 12000);
         try {
-            const tracks = await fetchWave(20, { shake });
-            if (revision !== waveRevision.value) return;
+            const tracks = await fetchWave(20, { shake, signal: controller.signal });
+            if (controller.signal.aborted || revision !== waveRevision.value) return;
             if (tracks.length === 0) {
-                showToast('Волна пока пуста — добавьте музыку или лайки');
-                if (currentView === 'wave') renderWaveIdle();
+                if (currentView === 'wave') renderWaveIdle({ error: 'Пока нет подходящих треков. Измените настройки или добавьте музыку.' });
                 return;
             }
             queueMode = 'wave';
@@ -1178,13 +1188,21 @@ document.addEventListener('DOMContentLoaded', () => {
             await playTrack(0, { force: true });
             if (currentView === 'wave') renderWaveView();
             if (shake) {
-                setWaveStatus('Поток перестроен — свежее направление рекомендаций');
+                setWaveStatus('Добавили новые открытия');
             }
         } catch (e) {
+            if (controller.signal.aborted || revision !== waveRevision.value) return;
             console.error('Ошибка запуска волны:', e);
-            showToast('⚠️ Не удалось загрузить волну');
-            if (currentView === 'wave' && !(queueMode === 'wave' && currentlyPlayingTrack)) renderWaveIdle();
+            const message = [404, 405].includes(e.status) ? e.message : 'Не удалось загрузить волну. Попробуйте запустить поток ещё раз.';
+            showToast(`⚠️ ${message}`);
+            if (currentView === 'wave' && !(queueMode === 'wave' && currentlyPlayingTrack)) renderWaveIdle({ error: message });
             else setWaveStatus(WAVE_STATUS_IDLE);
+        } finally {
+            clearTimeout(slowTimer);
+            if (waveStartController === controller) {
+                waveStartPending = false;
+                waveStartController = null;
+            }
         }
     }
 
@@ -1224,6 +1242,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
         window.addEventListener('devicemotion', (event) => {
             if (currentView !== 'wave' && queueMode !== 'wave') return;
+            if (waveDrawerOpen || waveStartPending || !currentlyPlayingTrack) return;
             const acc = event.accelerationIncludingGravity || event.acceleration;
             if (!acc || acc.x === null || acc.y === null || acc.z === null) return;
 
@@ -1251,12 +1270,14 @@ document.addEventListener('DOMContentLoaded', () => {
 
         window.addEventListener('offline', () => {
             refreshWaveToolbarDOM();
+            syncWaveSettingsPanel();
             if (queueMode === 'wave') {
-                setWaveStatus('⚡ Нет сети — работает офлайн-режим (TinyML)');
+                setWaveStatus('Нет сети · Только скачанное');
             }
         });
         window.addEventListener('online', () => {
             refreshWaveToolbarDOM();
+            syncWaveSettingsPanel();
         });
     })();
 
@@ -1768,6 +1789,7 @@ document.addEventListener('DOMContentLoaded', () => {
     function playFromList(list, index) {
         if (!Array.isArray(list) || index < 0 || index >= list.length) return;
         if (queueMode !== 'list' || queueListRef !== list) {
+            waveSession += 1;
             waveRevision.invalidate();
             queueMode = 'list';
             queueListRef = list;
@@ -1863,12 +1885,13 @@ document.addEventListener('DOMContentLoaded', () => {
             const elapsed = feedbackSession?.tracker.seconds || 0;
             const duration = audioPlayer.duration || currentlyPlayingTrack.duration || 0;
             const early = elapsed < 15 || (duration > 0 && elapsed / duration < 0.25);
-            const saved = await finishFeedback('skip');
-            if (token !== playToken) return;
+            const session = waveSession;
+            const saved = finishFeedback('skip');
             sessionSkipStreak = early ? sessionSkipStreak + 1 : 0;
-            if (queueMode === 'wave' && sessionSkipStreak >= 2 && saved) {
-                await refreshUpcomingWaveOnSkipStreak(true);
-                if (token !== playToken) return;
+            if (queueMode === 'wave' && sessionSkipStreak >= 2) {
+                saved.then(ok => {
+                    if (ok && session === waveSession && queueMode === 'wave') refreshUpcomingWaveOnSkipStreak(true);
+                });
             }
         }
         if (playbackQueue.next()) {
@@ -1904,7 +1927,7 @@ document.addEventListener('DOMContentLoaded', () => {
     audioPlayer.addEventListener('seeked', () => {
         feedbackSession?.tracker.sample(audioPlayer.currentTime || 0, performance.now(), playbackAudible);
     });
-    window.addEventListener('pagehide', () => finishFeedback('stop'));
+    window.addEventListener('pagehide', () => finishFeedback('stop', true));
 
     audioPlayer.addEventListener('error', (e) => {
         console.error('Ошибка аудиопотока:', e, audioPlayer.error);
@@ -2700,6 +2723,15 @@ document.addEventListener('DOMContentLoaded', () => {
         document.querySelectorAll('.nav-item').forEach(el => {
             el.classList.toggle('active', el.dataset.view === view);
         });
+        if (view !== 'wave') {
+            document.getElementById('wave-settings-panel')?.close();
+            if (waveStartController) {
+                waveStartController.abort();
+                waveRevision.invalidate();
+            }
+            waveStartController = null;
+            waveStartPending = false;
+        }
         currentView = view;
         waveEls = null;
         if (viewMeta) viewMeta.textContent = '';
@@ -2757,6 +2789,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // === GLOBAL KEYBOARD SHORTCUTS ===
     document.addEventListener('keydown', (e) => {
+        if (waveDrawerOpen) return;
         const tag = (e.target && e.target.tagName) ? e.target.tagName.toUpperCase() : '';
         if (tag === 'INPUT' || tag === 'TEXTAREA' || (e.target && e.target.isContentEditable)) return;
         if (e.ctrlKey || e.altKey || e.metaKey) return;
@@ -3269,8 +3302,8 @@ document.addEventListener('DOMContentLoaded', () => {
             });
             afterActions.querySelector('#ym-go-wave')?.addEventListener('click', () => {
                 overlay.remove();
-                initWavePlayback();
-                switchView('wave');
+                if (currentView === 'wave') initWavePlayback();
+                else switchView('wave');
             });
         };
 

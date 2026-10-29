@@ -20,6 +20,7 @@ class TrackRead(BaseModel):
     last_accessed: Optional[float] = None
     is_discovery: Optional[bool] = None
     recommendation_version: Optional[str] = None
+    recommendation_reason: Optional[str] = None
     tags: List[str] = Field(default_factory=list)
     detected_language: Optional[str] = None
 

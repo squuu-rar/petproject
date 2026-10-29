@@ -1,6 +1,7 @@
 import asyncio
 import json
 import time
+import sqlite3
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, Mock
 
@@ -119,6 +120,27 @@ def test_migration_preserves_history_and_is_repeatable(tracks):
     conn = db.get_db()
     try:
         assert conn.execute('SELECT count(*) FROM history').fetchone()[0] == 1
+    finally:
+        conn.close()
+
+
+def test_upgrade_old_history_schema(tmp_path, monkeypatch):
+    path = tmp_path / 'legacy.db'
+    conn = sqlite3.connect(path)
+    conn.execute('CREATE TABLE history (id INTEGER PRIMARY KEY, track_id INTEGER, event TEXT, elapsed_seconds REAL, timestamp REAL)')
+    conn.execute("INSERT INTO history VALUES (1, 7, 'finish', 200, 1234)")
+    conn.commit()
+    conn.close()
+    monkeypatch.setattr(db, 'DB_PATH', path)
+    db.init_db()
+    conn = db.get_db()
+    try:
+        row = conn.execute('SELECT * FROM history').fetchone()
+        assert row['event'] == 'finish'
+        assert row['elapsed_seconds'] == 200
+        assert row['playback_id'] is None
+        assert row['signal_weight'] is None
+        assert 'music_tag_cache' in {r[0] for r in conn.execute("SELECT name FROM sqlite_master WHERE type='table'")}
     finally:
         conn.close()
 

@@ -476,6 +476,10 @@ class WaveEngine:
                             "cache_path": None,
                             "liked": False,
                             "last_accessed": None,
+                            "recommendation_reason": (
+                                f"Похоже на {art_name}" if target_art in related_names
+                                else f"Ещё от {art_name}"
+                            ),
                         }
 
                         if cand_dict["duration"] and (cand_dict["duration"] < 45 or cand_dict["duration"] > 720):
@@ -529,12 +533,16 @@ class WaveEngine:
 
         async def resolve(item: Dict[str, str]) -> Optional[Dict[str, Any]]:
             async with sem:
-                return await asyncio.to_thread(self._search_youtube_stream, item["artist"], item["title"])
+                track = await asyncio.to_thread(self._search_youtube_stream, item["artist"], item["title"])
+                if track and item.get("recommendation_reason"):
+                    track = {**track, "recommendation_reason": item["recommendation_reason"]}
+                return track
 
         async def get_lastfm_tracks():
             async def similar(seed):
                 tracks = await self.lastfm.get_similar_tracks(seed["artist"], seed.get("title") or "", limit=8)
-                return tracks or await self._get_similar_by_artist(seed["artist"], seed_titles)
+                tracks = tracks or await self._get_similar_by_artist(seed["artist"], seed_titles)
+                return [{**track, "recommendation_reason": f"Похоже на {seed['artist']}"} for track in tracks]
 
             groups = await asyncio.gather(*(similar(s) for s in seeds[:3] if s.get("artist")), return_exceptions=True)
             unique = {}
@@ -588,6 +596,7 @@ class WaveEngine:
                         "artist": artist_name,
                         "album": item.get("album", {}).get("name") if isinstance(item.get("album"), dict) else "-",
                         "genre": "Wave (Radio)",
+                        "recommendation_reason": f"Волна по треку «{s['title']}»" if s.get("artist") and s.get("title") else None,
                         "year": None,
                         "track_number": None,
                         "cover_path": cover_url,

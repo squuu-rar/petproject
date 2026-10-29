@@ -46,11 +46,13 @@ def cached_tags(tracks, conn=None):
     conn = conn or get_db()
     try:
         cache = {}
+        visited = set()
         for track in tracks:
             artist, title = track_key(track)
             for key in ((artist, title), (artist, "")):
-                if key in cache:
+                if key in visited:
                     continue
+                visited.add(key)
                 row = conn.execute("SELECT tags, expires_at FROM music_tag_cache WHERE artist=? AND title=?", key).fetchone()
                 if row and row["expires_at"] > time.time():
                     try:

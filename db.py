@@ -310,7 +310,7 @@ def get_realtime_session_signals(minutes: float = 45.0) -> Dict[str, Any]:
         recent_session_artists: set[str] = set()
         skip_streak = 0
         streak_active = True
-        latest_track_signal: Dict[int, str] = {}
+        latest_track_signal: Dict[int, float] = {}
         artist_signals: Dict[str, List[int]] = {}
 
         for r in rows:
@@ -329,14 +329,14 @@ def get_realtime_session_signals(minutes: float = 45.0) -> Dict[str, Any]:
                     streak_active = False
 
             if ev in ("finish", "like", "skip", "dislike", "stop"):
-                latest_track_signal.setdefault(tid, "skip" if weight < 0 else ev)
+                latest_track_signal.setdefault(tid, weight)
                 counts = artist_signals.setdefault(art_low, [0, 0])
                 if weight <= -2:
                     counts[0] += 1
                 elif weight >= 2:
                     counts[1] += 1
 
-            if weight >= 2 and latest_track_signal.get(tid) != "skip":
+            if weight >= 2 and latest_track_signal.get(tid, 0) >= 0:
                 if tid not in positive_track_ids:
                     positive_track_ids.append(tid)
                 if art and art_low not in INVALID_ARTIST_NAMES and art not in positive_artists:

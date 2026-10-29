@@ -132,6 +132,7 @@ def test_context_search_falls_back_when_artist_does_not_match():
     result = engine._discover_from_ytmusic_taste(["Target"], set(), set(), set(), mood="calm")
     assert len(result) == 1
     assert result[0]["artist"] == "Target"
+    assert result[0]["recommendation_reason"] == "Ещё от Target"
     song_queries = [c.kwargs if c.kwargs else c.args for c in engine.ytmusic.search.call_args_list]
     assert len(song_queries) == 3  # artist lookup, contextual search, plain artist fallback
 
@@ -164,6 +165,7 @@ def test_all_candidate_sources_obey_same_filters(temp_db, monkeypatch):
     result = asyncio.run(engine.generate_candidates([100]))
     assert len(result) == 1
     assert result[0]["title"] == "Song 4"
+    assert result[0]["recommendation_reason"] == "Похоже на Artist 100"
 
 
 @pytest.mark.parametrize("character,limit,expected_local", [("discovery", 1, 0), ("discovery", 20, 1), ("favorite", 20, 15), ("all", 20, 3)])

@@ -71,7 +71,7 @@ def quality_metrics(days=30):
     sessions = {}
     for row in rows:
         sessions.setdefault(row["playback_id"], {})[row["event"]] = dict(row)
-    groups = {"all": list(sessions.values())}
+    groups = {}
     for events in sessions.values():
         sample = events.get("play") or next(iter(events.values()))
         version = sample.get("recommendation_version") or "unknown"
@@ -110,5 +110,5 @@ def quality_metrics(days=30):
                 "mean_listen_ratio": rate(sum(ratios), len(ratios)),
                 "adjacent_artist_repeat_rate": rate(repeats, pairs),
                 "unique_artists": len(counts), "top_artist_share": rate(max(counts.values(), default=0), len(artists))}
-    return {"days": days, "algorithm_version": VERSION, "overall": summarize(groups.pop("all")),
+    return {"days": days, "algorithm_version": VERSION, "overall": summarize(list(sessions.values())),
             "by_version": {key: summarize(value) for key, value in groups.items()}}
