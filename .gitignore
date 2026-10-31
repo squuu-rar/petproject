@@ -26,3 +26,11 @@ tracks.db-wal
 tracks.db-shm
 *.pyc
 .venv/
+
+# Extracted covers, cache & runtime files
+static/covers/
+static/cache/
+static/uploads/
+.tunnel_url
+*.db-wal
+*.db-shm
